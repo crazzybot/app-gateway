@@ -1,0 +1,157 @@
+{
+  "_comment": "Claude Code team settings — committed to git. Treat changes like config contract changes: PR + review required.",
+
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash scripts/hooks/secret-scan-bash.sh \"$CLAUDE_TOOL_INPUT\"",
+            "description": "Reject bash commands that would print or expose secrets (grep for KEY=, TOKEN=, PASSWORD= patterns in the command string itself)"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash scripts/hooks/secret-scan-file.sh \"$CLAUDE_TOOL_INPUT_PATH\" \"$CLAUDE_TOOL_INPUT_CONTENT\"",
+            "description": "Scan file content being written for hardcoded secrets, API keys, tokens, and credentials before the write is committed to disk"
+          }
+        ]
+      }
+    ],
+
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash scripts/hooks/test-runner.sh \"$CLAUDE_TOOL_INPUT_PATH\"",
+            "description": "After modifying a source file, run the related Vitest suite. Does not block — reports only."
+          }
+        ]
+      }
+    ],
+
+    "Stop": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npm test && npm run typecheck && npm run lint",
+            "description": "Full quality gate: tests, TypeScript compilation, and ESLint must all pass before Claude considers its work done"
+          }
+        ]
+      }
+    ]
+  },
+
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)",
+      "Bash(npm test *)",
+      "Bash(npx *)",
+      "Bash(node *)",
+      "Bash(git status)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git checkout *)",
+      "Bash(git switch *)",
+      "Bash(git log *)",
+      "Bash(git branch)",
+      "Bash(git branch -a)",
+      "Bash(git branch -v)",
+      "Bash(git stash *)",
+      "Bash(git fetch *)",
+      "Bash(git pull --rebase *)",
+      "Bash(git merge --no-ff *)",
+      "Bash(git worktree *)",
+      "Bash(git show *)",
+      "Bash(cat *)",
+      "Bash(ls *)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(rg *)",
+      "Bash(mkdir -p *)",
+      "Bash(cp *)",
+      "Bash(mv *)",
+      "Bash(echo *)",
+      "Bash(jq *)",
+      "Bash(curl --dry-run *)",
+      "Write(**/*.ts)",
+      "Write(**/*.json)",
+      "Write(**/*.md)",
+      "Write(**/*.yaml)",
+      "Write(**/*.yml)",
+      "Write(**/*.sql)",
+      "Write(specs/*.spec.md)",
+      "Write(plans/*.plan.md)",
+      "Write(docs/**/*.md)",
+      "Write(CHANGELOG.md)"
+    ],
+
+    "deny": [
+      "Bash(git push --force*)",
+      "Bash(git push -f *)",
+      "Bash(git push -f)",
+      "Bash(git tag *)",
+      "Bash(git branch -D *)",
+      "Bash(git branch --delete *)",
+      "Bash(git reset --hard HEAD~*)",
+      "Bash(rm -rf *)",
+      "Bash(DROP TABLE*)",
+      "Bash(DROP DATABASE*)",
+      "Bash(TRUNCATE*)",
+      "Bash(DELETE FROM * WHERE 1=1*)",
+      "Bash(DELETE FROM * WHERE true*)",
+      "Bash(psql *production*)",
+      "Bash(redis-cli *production*)",
+      "Bash(aws iam *)",
+      "Bash(aws ec2 *security-group*)",
+      "Bash(terraform apply*)",
+      "Bash(terraform destroy*)",
+      "Bash(kubectl delete *)",
+      "Bash(kubectl apply -f *production*)",
+      "Write(**/.env)",
+      "Write(**/.env.production)",
+      "Write(**/.env.staging)",
+      "Write(**/.env.local)",
+      "Write(**/*credentials*)",
+      "Write(**/*secret*)",
+      "Write(**/*.pem)",
+      "Write(**/*.key)",
+      "Write(**/*.p12)",
+      "Write(**/*.pfx)",
+      "Write(**/.github/workflows/*)",
+      "Write(**/src/middleware/authenticate.*)",
+      "Write(**/src/utils/crypto.*)",
+      "Write(**/src/db/migrations/*)"
+    ]
+  },
+
+  "agents": {
+    "security-reviewer": {
+      "description": "OWASP Top 10 security review specialist. Invoke for any auth, SSO/SAML, OAuth, token, or PII-handling code.",
+      "definition": ".claude/agents/security-reviewer.md",
+      "model": "claude-opus-4-5"
+    },
+    "api-contract-checker": {
+      "description": "OpenAPI contract validation. Invoke after any API change to verify specs/openapi.yaml, src/schemas/, and src/routes/ are in sync.",
+      "definition": ".claude/agents/api-contract-checker.md",
+      "model": "claude-sonnet-4-5"
+    },
+    "performance-reviewer": {
+      "description": "Backend query and Redis performance reviewer. Invoke for new Drizzle queries, new Redis access patterns, and new data-returning endpoints.",
+      "definition": ".claude/agents/performance-reviewer.md",
+      "model": "claude-sonnet-4-5"
+    }
+  }
+}

@@ -5,3 +5,4 @@ coverage/
 .env.development
 .env.local
 *.log
+CLAUDE.local.md

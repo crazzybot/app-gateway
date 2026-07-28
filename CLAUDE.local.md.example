@@ -1,0 +1,66 @@
+# CLAUDE.local.md — Personal Project Overrides
+#
+# PURPOSE:
+#   This file is your personal Claude Code configuration for the App Gateway
+#   Service. It is gitignored and never committed — it is yours alone.
+#   Use it to add personal preferences, local environment quirks, or shortcuts
+#   that are specific to your machine without polluting the shared CLAUDE.md.
+#
+# HOW TO USE:
+#   1. Copy this file: cp CLAUDE.local.md.example CLAUDE.local.md
+#   2. Edit CLAUDE.local.md with your personal settings
+#   3. CLAUDE.local.md will be loaded automatically alongside CLAUDE.md
+#
+# WHAT BELONGS HERE vs CLAUDE.md:
+#   ✅ Here: Personal tool paths, local dev shortcuts, your preferred verbosity level
+#   ✅ Here: Local Postgres/Redis connection quirks, your Docker Compose notes
+#   ✅ Here: Personal prompt style preferences ("be concise", "explain tradeoffs")
+#   ❌ Not here: Team conventions, project architecture, DoD criteria (those live in CLAUDE.md)
+#   ❌ Not here: Secrets or credentials (never in any CLAUDE file)
+#
+# ---
+
+## Personal Environment
+
+# Uncomment and adjust to match your local setup:
+# My local API runs on port 3001 (not the default 3000) due to a port conflict.
+
+# My database and Redis are running via Docker Compose. To reset them locally:
+# docker compose -f docker-compose.dev.yml down -v && docker compose -f docker-compose.dev.yml up -d
+
+# After a reset, re-run migrations and seed a dev user:
+# npm run db:migrate && npm run db:seed
+
+## Personal Preferences
+
+# Preferred response style:
+# - I prefer concise answers. Explain the why, skip obvious steps.
+# - When generating tests, show the test first, then ask if I want the implementation.
+# - When you find multiple approaches, list them with tradeoffs rather than picking one.
+
+## Local Tool Paths
+
+# If you have non-standard tool installations, document them here:
+# Using nvm — Node version is pinned in .nvmrc (if present). Run `nvm use` if you see version errors.
+# JWT dev keys: generated locally at tests/fixtures/keys/ — regenerate with [command] if rotated.
+
+## Skipping Specific Checks During Development
+
+# If you need to temporarily disable a Stop hook check during active development,
+# add a note here as a reminder to re-enable it before pushing:
+# TODO: Re-enable the integration-test Stop hook check before creating a PR (disabled
+# 2026-07-15 while local Testcontainers/Docker setup is unstable)
+
+## Personal Shortcuts
+
+# Quick commands I use frequently:
+# - Run only unit tests in watch mode: npm run test:watch
+# - Run integration tests (spins up Testcontainers): npm run test:integration
+# - Open Drizzle Studio to inspect the dev database: npm run db:studio
+
+## Notes for My Claude Sessions
+
+# Add any personal reminders that help you work with Claude on this project:
+# - I tend to drift into over-specifying. Push back if my prompts are too prescriptive.
+# - Remind me to run /review before creating a PR — I forget.
+# - When I ask you to "just fix it quickly", remind me to check if a spec exists first.

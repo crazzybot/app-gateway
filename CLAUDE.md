@@ -197,6 +197,139 @@ See `.env.example` for a complete template.
 
 ---
 
+## Git Workflow
+
+**Branch strategy:** Trunk-based development with short-lived feature branches off `main`.
+
+```
+main                          ← production releases (protected; PR-only merges)
+  └── feature/[slug]          ← feature/[TICKET-ID]-[slug] if a ticket exists
+  └── fix/[slug]
+  └── refactor/[slug]
+  └── chore/[slug]
+```
+
+### Commit Messages (Conventional Commits — enforced)
+
+Format: `<type>(<scope>): <subject>`
+
+- **Types:** `feat` | `fix` | `refactor` | `test` | `chore` | `docs` | `perf` | `build`
+- **Subject:** imperative mood, lowercase, no trailing period, ≤72 characters
+- **Body:** explain *why*, not *what*, when the change requires context
+
+### PR Requirements
+
+- PRs are required for all merges to `main`
+- Every PR must have passed the AI review step (`/review`) before human review begins
+- Minimum one human approver
+
+---
+
+## Spec-Driven Development Workflow
+
+**Every non-trivial feature follows this five-phase cycle.** Skipping phases is only permitted for single-file changes whose full scope can be described in one sentence.
+
+```
+1. /spec-feature "[description]"  →  specs/[feature].spec.md   (human reviews & approves)
+2. /plan                          →  plans/[feature].plan.md    (human reviews & approves)
+3. /implement                     →  code changes               (human reviews diff)
+4. /review                        →  review findings            (human addresses or accepts)
+5. /pr-create                     →  PR description             (human submits)
+```
+
+**Critical rule:** Do not proceed from planning to implementation without explicit human approval of both the spec and the plan. If a session jumps to coding without being asked, reject the output and restate the phase boundary.
+
+---
+
+## Context Management Rules
+
+Context degradation is the primary risk in long sessions. Apply these rules every session:
+
+| Situation | Action |
+|-----------|--------|
+| Starting a new, unrelated task | `/clear` — always start fresh |
+| Context filling but task continues | `/compact Focus on [spec file] and files modified so far` |
+| Session drifts from spec | `/rewind` to a checkpoint and restate the constraint |
+| Quick question without polluting history | `/btw [question]` |
+| Exploring unfamiliar code before implementing | Use a **subagent** — keeps main session clean |
+
+**Compaction instruction (auto-applied on compact):**
+When compacting, always preserve: the full list of modified files, the current spec file path, any failing test output, and the remaining acceptance criteria.
+
+---
+
+## Available Skills (Slash Commands)
+
+| Command | Trigger | Purpose |
+|---------|---------|---------|
+| `/spec-feature` | `/spec-feature "add refresh token reuse alerting"` | Generates structured spec in `specs/` |
+| `/plan` | `/plan` | Generates implementation plan from current spec, saved to `plans/` |
+| `/implement` | `/implement` | Implements approved plan, spec-referenced |
+| `/review` | `/review` | Adversarial review in a fresh subagent |
+| `/pr-create` | `/pr-create` | Generates PR description with all required sections |
+| `/api-change` | `/api-change "new endpoint description"` | Guided API-first endpoint workflow (OpenAPI → Zod schema → route/service) |
+| `/db-migration` | `/db-migration "describe schema change"` | Guided Drizzle schema-change workflow with safety assessment |
+| `/fix-issue` | `/fix-issue PROJ-1234` | Fetches issue and implements fix |
+
+This project has no UI tier and no OpenAPI codegen step, so `/migrate-component` and any
+codegen-regeneration guidance from a generic template do not apply here — `src/schemas/`
+(Zod) is hand-written and kept in sync with `specs/openapi.yaml` manually.
+
+---
+
+## Definition of Done
+
+**A feature is not complete until every item below is satisfied.** Claude must not close a task until the DoD is met.
+
+### Code Quality
+- [ ] TypeScript compiles with zero errors (`npm run typecheck`)
+- [ ] ESLint passes with zero warnings (`npm run lint`)
+- [ ] No `@ts-ignore`, `any` types, or `// eslint-disable` comments added without a comment explaining why
+
+### Testing
+- [ ] Unit tests pass with ≥80% line/branch coverage on all new code
+- [ ] Integration tests cover all new/changed API endpoints against real Postgres + Redis (Testcontainers)
+- [ ] All acceptance criteria from the feature spec have at least one passing test as evidence
+
+### API Contract
+- [ ] `specs/openapi.yaml` updated if any API endpoint was added, changed, or removed
+- [ ] `src/schemas/` (Zod) updated to match `specs/openapi.yaml` exactly — checked by the `api-contract-checker` agent, since there is no codegen to catch drift automatically
+- [ ] No breaking changes to existing API fields without explicit coordination
+
+### Security
+- [ ] No hardcoded secrets, credentials, API keys, or environment-specific values in committed code
+- [ ] Secret-scan hook has run (automatic via PreToolUse/Stop hooks)
+- [ ] `security-reviewer` subagent has been run for any auth, SSO/SAML, OAuth, token, or PII-handling code
+- [ ] Every applicable item in this file's **Security Rules** section is satisfied
+
+### Documentation
+- [ ] Feature spec status updated to `Implemented`
+- [ ] Any new environment variables documented in `.env.example` (never in `.env`)
+
+### Review
+- [ ] AI review (`/review`) has run and all correctness findings are addressed
+- [ ] PR description includes "How to Test" step-by-step instructions
+- [ ] Human code review approved
+
+---
+
+## Blocked Operations (Require Explicit Human Authorisation)
+
+Claude must not execute the following without a human confirming the action in the session:
+
+- Production database migrations (`DROP TABLE`, `DELETE` without `WHERE`, truncation)
+- Cloud resource creation, deletion, or IAM policy changes
+- Any write to `.env`, `*.pem`, `*credentials*` files or secrets managers
+- Major version upgrades of core framework dependencies (Express, `jose`, `drizzle-orm`, `passport-saml`)
+- Removing or renaming existing API fields in `specs/openapi.yaml`
+- Force pushes (`git push --force`)
+- Modifications to `.github/workflows/` or other CI/CD pipeline definitions
+- Any change to auth middleware, JWT/JWKS handling, SAML assertion validation, or OAuth/PKCE logic
+
+See `.claude/settings.json` for enforced permission blocks.
+
+---
+
 ## Spec Links
 
 - Auth flows & token schema → `@specs/app-gateway-auth.spec.md`
