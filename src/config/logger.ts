@@ -31,6 +31,8 @@ export const logger = winston.createLogger({
   level: env.LOG_LEVEL,
   format:
     env.NODE_ENV === 'production' ? productionFormat : developmentFormat,
+  // AC-34: every JSON log line must carry `service: "app-gateway"`.
+  defaultMeta: { service: 'app-gateway' },
   transports: [new winston.transports.Console()],
   // Prevent winston from exiting on uncaught exceptions — we handle those.
   exitOnError: false,

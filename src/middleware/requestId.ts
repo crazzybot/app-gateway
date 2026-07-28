@@ -20,6 +20,7 @@ export function requestId(
   const id =
     (req.headers['x-request-id'] as string | undefined) ?? uuidv4();
 
+  req.requestId = id;
   res.locals['requestId'] = id;
   res.setHeader('X-Request-ID', id);
 

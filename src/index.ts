@@ -25,6 +25,8 @@ import { createServer, type Server } from 'node:http';
 import { env } from './config/env.js';
 import { logger } from './config/logger.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import { httpLogger } from './middleware/httpLogger.js';
+import { rateLimiter } from './middleware/rateLimiter.js';
 import { requestId } from './middleware/requestId.js';
 import { authRouter } from './routes/auth.router.js';
 import { oauthRouter } from './routes/oauth.router.js';
@@ -54,6 +56,10 @@ export function createApp(): express.Express {
   // Attaches/forwards X-Request-ID so every log line is traceable.
   app.use(requestId);
 
+  // ── HTTP access log ────────────────────────────────────────────────────────
+  // Excludes /health and /ready internally (FR-24/FR-25, AC-34).
+  app.use(httpLogger);
+
   // ── Body parsers ──────────────────────────────────────────────────────────
   app.use(express.json({ limit: '256kb' }));
   app.use(express.urlencoded({ extended: true, limit: '256kb' }));
@@ -63,14 +69,21 @@ export function createApp(): express.Express {
 
   // ── Route groups ──────────────────────────────────────────────────────────
 
-  // System health / readiness probes — no auth required, no rate limiting
-  app.use('/health', systemRouter);
-  app.use('/ready', systemRouter);
+  // System health / readiness probes — no auth required, no rate limiting,
+  // no audit logging. Mounted once, at the root — the router itself defines
+  // the /health and /ready paths (previously mounted twice at those two
+  // prefixes, which made GET /ready hit the liveness handler by accident).
+  app.use(systemRouter);
 
-  // Auth routes: login, logout, token refresh, token revoke, SAML ACS
+  // Auth + OAuth endpoints share the FR-22/NFR-3 default rate limit
+  // (100 req/min/IP). OAuth routes are still 501 stubs this phase but the
+  // limiter applies regardless, per FR-22's blanket scope.
+  app.use(['/v1/auth', '/v1/oauth'], rateLimiter());
+
+  // Auth routes: login, logout, token refresh, JWKS, SAML ACS
   app.use('/v1/auth', authRouter);
 
-  // OAuth 2.0: authorize, token, introspect, revoke, JWKS endpoint
+  // OAuth 2.0: authorize, token, introspect, revoke
   app.use('/v1/oauth', oauthRouter);
 
   // Reverse-proxy: authenticated pass-through to upstream micro-services
@@ -105,7 +118,7 @@ export const app = createApp();
  * Called on SIGTERM and SIGINT so Kubernetes / Docker stop works cleanly.
  */
 async function shutdown(server: Server, signal: string): Promise<void> {
-  logger.info('Received %s — starting graceful shutdown', signal);
+  logger.info('Received shutdown signal — starting graceful shutdown', { signal });
 
   await new Promise<void>((resolve, reject) => {
     // Stop accepting new connections; wait for in-flight requests to finish.
@@ -129,10 +142,11 @@ async function shutdown(server: Server, signal: string): Promise<void> {
     const { db } = await import('./db/client.js');
     // Drizzle wraps pg.Pool — call end() on the underlying pool.
     // @ts-expect-error — accessing internal pool for cleanup
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     await db.$client?.end?.();
     logger.info('Database pool closed');
   } catch (err) {
-    logger.warn('Error closing database pool: %s', String(err));
+    logger.warn('Error closing database pool', { err });
   }
 
   try {
@@ -140,7 +154,7 @@ async function shutdown(server: Server, signal: string): Promise<void> {
     await redis.quit();
     logger.info('Redis connection closed');
   } catch (err) {
-    logger.warn('Error closing Redis connection: %s', String(err));
+    logger.warn('Error closing Redis connection', { err });
   }
 
   logger.info('Shutdown complete');
@@ -156,24 +170,21 @@ if (process.env['VITEST'] === undefined) {
   const server = createServer(app);
 
   server.listen(port, () => {
-    logger.info(
-      { port, nodeEnv: env.NODE_ENV },
-      'App Gateway Service listening',
-    );
+    logger.info('App Gateway Service listening', { port, nodeEnv: env.NODE_ENV });
   });
 
   server.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
-      logger.error('Port %d is already in use', port);
+      logger.error('Port already in use', { port });
     } else {
-      logger.error({ err }, 'HTTP server error');
+      logger.error('HTTP server error', { err });
     }
     process.exit(1);
   });
 
   const handleSignal = (signal: string) => {
-    shutdown(server, signal).catch((err) => {
-      logger.error({ err }, 'Unhandled error during shutdown');
+    shutdown(server, signal).catch((err: unknown) => {
+      logger.error('Unhandled error during shutdown', { err });
       process.exit(1);
     });
   };
@@ -184,7 +195,7 @@ if (process.env['VITEST'] === undefined) {
   // Catch unhandled promise rejections — log and exit so the process manager
   // can restart the container rather than leaving it in a broken state.
   process.on('unhandledRejection', (reason) => {
-    logger.error({ reason }, 'Unhandled promise rejection — exiting');
+    logger.error('Unhandled promise rejection — exiting', { reason });
     process.exit(1);
   });
 }

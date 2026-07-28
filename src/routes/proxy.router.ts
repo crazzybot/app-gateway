@@ -23,7 +23,11 @@ export const proxyRouter = Router();
 //       dynamically register http-proxy-middleware instances per prefix.
 
 // Placeholder: returns 501 until the proxy service is wired up.
-proxyRouter.all('*', (_req, res) => {
+// `.use()` with no path matches unconditionally — Express 5's router (on
+// path-to-regexp v6+) rejects a bare '*' wildcard pattern in `.all('*', ...)`
+// with "Missing parameter name at index 1", so a real route pattern isn't
+// used here at all for this catch-all stub.
+proxyRouter.use((_req, res) => {
   res.status(501).json({
     error: 'NOT_IMPLEMENTED',
     message: 'Proxy routing is not yet configured.',

@@ -1,0 +1,15 @@
+# Local development image — hot-reloads via `tsx watch`.
+# docker-compose.dev.yml bind-mounts ./src, ./tests, and ./tsconfig.json over
+# this image at runtime; the COPY below only seeds an initial build context.
+FROM node:20-alpine
+
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+RUN npm install
+
+COPY . .
+
+EXPOSE 3000
+
+CMD ["npm", "run", "dev"]

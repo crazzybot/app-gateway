@@ -45,8 +45,8 @@ app-gateway/
 │   ├── index.ts                  # Entry point — wires app + graceful shutdown
 │   ├── app.ts                    # Express app factory (exported for tests)
 │   ├── routes/
-│   │   ├── auth.router.ts        # /v1/auth  — login, logout, refresh, revoke
-│   │   ├── oauth.router.ts       # /v1/oauth — authorize, token, introspect, JWKS
+│   │   ├── auth.router.ts        # /v1/auth  — login, logout, refresh, me, JWKS
+│   │   ├── oauth.router.ts       # /v1/oauth — authorize, token, introspect, revoke
 │   │   ├── proxy.router.ts       # /api/**   — upstream service proxy
 │   │   └── system.router.ts      # /health, /ready
 │   ├── middleware/
@@ -56,11 +56,15 @@ app-gateway/
 │   │   ├── requestId.ts          # X-Request-ID injection
 │   │   └── validate.ts           # Zod schema middleware factory
 │   ├── services/
-│   │   ├── token.service.ts      # JWT sign / verify / revoke
-│   │   ├── saml.service.ts       # SAML assertion parsing & session
-│   │   ├── oauth.service.ts      # OAuth 2.0 flows + PKCE
-│   │   ├── proxy.service.ts      # Upstream routing table
-│   │   └── audit.service.ts      # Structured audit log events
+│   │   ├── token.service.ts      # JWT sign / verify / revoke, JWKS document
+│   │   ├── user.service.ts       # User lookup, password hashing/verification
+│   │   ├── refreshToken.service.ts # Refresh token issue/rotate/reuse-detection
+│   │   ├── audit.service.ts      # Structured audit log events
+│   │   ├── saml.service.ts       # [not yet implemented] SAML assertion parsing & session
+│   │   ├── oauth.service.ts      # [not yet implemented] OAuth 2.0 flows + PKCE
+│   │   └── proxy.service.ts      # [not yet implemented] Upstream routing table
+│   ├── schemas/
+│   │   └── auth.schemas.ts       # Zod request-body schemas for /v1/auth
 │   ├── db/
 │   │   ├── client.ts             # Drizzle client singleton
 │   │   ├── schema.ts             # All table definitions
@@ -69,11 +73,12 @@ app-gateway/
 │   │   ├── env.ts                # Zod-parsed, typed env config
 │   │   └── logger.ts             # Winston logger instance
 │   ├── types/
+│   │   ├── index.ts              # Shared types (JwtAccessTokenClaims, TokenResponse, ...)
 │   │   ├── errors.ts             # AppError hierarchy
 │   │   ├── result.ts             # Result<T, E> type
 │   │   └── express.d.ts          # Express Request augmentation
 │   └── utils/
-│       ├── crypto.ts             # Key loading helpers
+│       ├── crypto.ts             # Key loading + PII encryption/HMAC helpers
 │       └── time.ts               # TTL / date utilities
 ├── tests/
 │   ├── unit/                     # Pure function tests — no I/O
@@ -134,13 +139,19 @@ The service **will not start** if a required variable is missing or malformed.
 |---|---|---|
 | `PORT` | No (default `3000`) | HTTP listen port |
 | `NODE_ENV` | Yes | `development` \| `production` \| `test` |
+| `GATEWAY_BASE_URL` | No (default `http://localhost:3000`) | Used as the JWT `iss` claim |
 | `DATABASE_URL` | Yes | PostgreSQL connection string (`postgres://...`) |
 | `REDIS_URL` | Yes | Redis connection string (`redis://...`) |
 | `JWT_PRIVATE_KEY_PATH` | Yes | Absolute path to PEM private key for JWT signing |
 | `JWT_PUBLIC_KEY_PATH` | Yes | Absolute path to PEM public key (or JWKS JSON) |
 | `JWT_ALGORITHM` | No (default `RS256`) | `RS256` \| `RS384` \| `ES256` \| `ES384` |
+| `JWT_KID` | Yes | Stable UUID identifying the active signing key; must not change across restarts |
+| `JWT_PREVIOUS_KID` | No | Previous key's `kid`, kept in JWKS verify-only during a rotation window (paired with `JWT_PREVIOUS_PUBLIC_KEY_PATH`) |
+| `JWT_PREVIOUS_PUBLIC_KEY_PATH` | No | Previous key's public key path (paired with `JWT_PREVIOUS_KID`) |
 | `ACCESS_TOKEN_TTL_SECONDS` | No (default `900`) | Access token lifetime in seconds |
-| `REFRESH_TOKEN_TTL_SECONDS` | No (default `2592000`) | Refresh token lifetime in seconds (30 days) |
+| `REFRESH_TOKEN_TTL_SECONDS` | No (default `604800`) | Refresh token lifetime in seconds (7 days) |
+| `DEFAULT_USER_SCOPE` | No (default `"openid profile email api:read"`) | Scope granted to password-authenticated logins (not spec'd for non-OAuth flows) |
+| `ENCRYPTION_KEY` | Yes | 32 bytes, base64-encoded — AES-256-GCM/HMAC key for `users.email` at rest |
 | `SAML_SP_ENTITY_ID` | Yes* | Service-provider entity ID (*required if SAML enabled) |
 | `SAML_SP_CALLBACK_URL` | Yes* | ACS callback URL (`https://…/v1/auth/saml/callback`) |
 | `UPSTREAM_SERVICES_CONFIG_PATH` | Yes | Path to JSON file describing upstream routing table |
@@ -177,7 +188,7 @@ See `.env.example` for a complete template.
 
 1. **Never log access tokens, refresh tokens, client secrets, or passwords** — not even partially.  
    Audit events reference token JTI (ID) only.
-2. **Rotate signing keys without downtime** — the JWKS endpoint (`/v1/oauth/jwks`) must serve both the active key and the previous key during the rotation window. Key IDs (`kid`) must be stable UUIDs.
+2. **Rotate signing keys without downtime** — the JWKS endpoint (`/v1/auth/.well-known/jwks.json`) must serve both the active key and the previous key during the rotation window. Key IDs (`kid`) must be stable UUIDs.
 3. **Validate all SAML assertions** — verify signature, `NotBefore`/`NotOnOrAfter` time windows, audience restriction, and destination URL. Reject unsigned assertions unconditionally.
 4. **Enforce PKCE on every OAuth `authorization_code` flow** — `code_challenge` (S256 only) is required at `/v1/oauth/authorize`; `code_verifier` is required at `/v1/oauth/token`. Plain challenge method is rejected.
 5. **`Secure; HttpOnly; SameSite=Strict`** on all cookies that carry tokens.

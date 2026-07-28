@@ -8,7 +8,7 @@
 export class AppError extends Error {
   constructor(
     public readonly code: string,
-    public readonly message: string,
+    public override readonly message: string,
     public readonly statusCode: number,
     public readonly details?: unknown,
   ) {
@@ -47,11 +47,53 @@ export class InvalidTokenError extends AppError {
   }
 }
 
+/**
+ * Spec-exact lowercase error codes (AC-2, AC-4, AC-5, AC-8) — errorHandler.ts
+ * emits `err.code` verbatim as the wire `error` field, so these carry the
+ * literal string values acceptance criteria assert on, not the generic
+ * SCREAMING_SNAKE codes above.
+ */
+
+export class InvalidCredentialsError extends AppError {
+  constructor(message = 'Email or password is incorrect') {
+    super('invalid_credentials', message, 401);
+  }
+}
+
+export class TokenExpiredError extends AppError {
+  constructor(message = 'Token has expired') {
+    super('token_expired', message, 401);
+  }
+}
+
+export class TokenRevokedError extends AppError {
+  constructor(message = 'Token has been revoked') {
+    super('token_revoked', message, 401);
+  }
+}
+
+export class TokenReuseDetectedError extends AppError {
+  constructor(message = 'Refresh token reuse detected; session revoked') {
+    super('token_reuse_detected', message, 401);
+  }
+}
+
 // ── 403 ──────────────────────────────────────────────────────────────────────
 
 export class ForbiddenError extends AppError {
   constructor(message = 'You do not have permission to perform this action') {
     super('FORBIDDEN', message, 403);
+  }
+}
+
+export class InsufficientScopeError extends AppError {
+  constructor(public readonly requiredScope: string) {
+    super(
+      'insufficient_scope',
+      `Requires scope "${requiredScope}"`,
+      403,
+      { scope: requiredScope },
+    );
   }
 }
 
