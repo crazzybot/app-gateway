@@ -1,0 +1,89 @@
+version: "3.9"
+
+# ---------------------------------------------------------------------------
+# App Gateway — local development stack
+# ---------------------------------------------------------------------------
+# Usage:
+#   docker compose -f docker-compose.dev.yml up
+#
+# The app-gateway service mounts src/ for hot-reload via tsx watch.
+# Credentials here are for local dev only — never use these in production.
+# ---------------------------------------------------------------------------
+
+services:
+
+  # ── PostgreSQL 16 ─────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: gateway_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: gateway_dev
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: gateway_secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - gateway-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d gateway_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ── Redis 7 ───────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: gateway_redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    ports:
+      - "6379:6379"
+    networks:
+      - gateway-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # ── App Gateway ───────────────────────────────────────────────────────────
+  app-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: gateway_app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      # Hot-reload: mount source directories, but keep node_modules in image
+      - ./src:/app/src:ro
+      - ./tests:/app/tests:ro
+      - ./tsconfig.json:/app/tsconfig.json:ro
+      # Exclude node_modules from the bind-mount
+      - /app/node_modules
+    env_file:
+      - .env.development
+    networks:
+      - gateway-network
+
+# ── Networks ─────────────────────────────────────────────────────────────────
+networks:
+  gateway-network:
+    driver: bridge
+    name: gateway-network
+
+# ── Volumes ──────────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+    name: gateway_postgres_data

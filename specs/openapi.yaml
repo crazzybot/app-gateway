@@ -1,0 +1,2380 @@
+openapi: 3.1.0
+
+info:
+  title: App Gateway Authentication & Routing Service
+  version: 1.0.0
+  description: |
+    The App Gateway is the unified authentication and request-routing gateway for the multi-app
+    platform. It provides:
+
+    - **JWT-based authentication** with short-lived access tokens (15 min) and rotating refresh
+      tokens (7 days). Users authenticate once and stay authenticated across web and mobile clients.
+    - **Enterprise SSO via SAML 2.0**, supporting Okta, Azure Active Directory, and Google
+      Workspace as Identity Providers with per-tenant configuration.
+    - **OAuth 2.0 Authorization Server** implementing `authorization_code` (with mandatory PKCE
+      for public clients) and `client_credentials` grant types.
+    - **Request proxying** to upstream backend services with authenticated identity forwarded
+      via `X-User-*` headers. Upstream services require no token validation logic.
+    - **Rate limiting**, **token revocation** (Redis-backed), **JWKS publication**, and full
+      structured audit logging.
+
+    ## Authentication
+
+    Most endpoints that return or validate tokens use one of three security schemes:
+
+    | Scheme       | Usage                                                         |
+    |--------------|---------------------------------------------------------------|
+    | `BearerAuth` | Authenticated user or service sends `Authorization: Bearer <jwt>` |
+    | `BasicAuth`  | OAuth client authenticates with `client_id:client_secret`    |
+    | `ApiKeyAuth` | Admin operations; send `X-Admin-Api-Key: <key>`              |
+
+    ## Error Format
+
+    All error responses use the `ErrorResponse` schema:
+    ```json
+    {
+      "error": "invalid_credentials",
+      "error_description": "Email or password is incorrect.",
+      "request_id": "550e8400-e29b-41d4-a716-446655440000"
+    }
+    ```
+
+    OAuth error responses additionally conform to RFC 6749 §5.2 error codes.
+
+    ## Rate Limiting
+
+    Authentication and OAuth endpoints enforce **100 requests per minute per source IP** by default.
+    Rate limit status is communicated via response headers:
+    - `X-RateLimit-Limit` — configured limit
+    - `X-RateLimit-Remaining` — requests remaining in the current window
+    - `X-RateLimit-Reset` — Unix epoch timestamp when the window resets
+    - `Retry-After` — seconds to wait (present only on 429 responses)
+
+  contact:
+    name: Platform Architecture Team
+    email: platform-arch@example.com
+    url: https://platform.example.com/docs
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+
+servers:
+  - url: http://localhost:4000
+    description: Local development (Docker Compose)
+  - url: https://gateway.staging.example.com
+    description: Staging environment
+  - url: https://gateway.example.com
+    description: Production environment
+
+tags:
+  - name: Authentication
+    description: |
+      Core JWT-based authentication endpoints. Users log in with email and password,
+      receive a short-lived JWT access token and a rotating refresh token, and manage
+      their session lifecycle (refresh, logout). The `/me` endpoint returns the
+      authenticated user's profile from the JWT claims.
+  - name: SSO
+    description: |
+      SAML 2.0 Single Sign-On endpoints. Each enterprise tenant has a unique slug
+      that namespaces its IdP configuration. Supports SP-initiated and IdP-initiated
+      flows, SP metadata publication, assertion consumption, and Single Logout (SLO).
+  - name: OAuth
+    description: |
+      OAuth 2.0 authorization server endpoints. Implements `authorization_code` with
+      mandatory PKCE for public clients, `client_credentials` for M2M access, token
+      introspection (RFC 7662), token revocation (RFC 7009), and admin client registration.
+  - name: Proxy
+    description: |
+      Request proxying to upstream backend services. The gateway validates the JWT
+      (if the route requires auth), enforces role and scope policies, strips any
+      client-supplied identity headers, injects `X-User-*` headers, and forwards
+      the request to the configured upstream URL.
+  - name: System
+    description: |
+      Operational endpoints: liveness probe, readiness probe (checks PostgreSQL + Redis),
+      and Prometheus metrics. These endpoints require no authentication and are excluded
+      from rate limiting and audit logging.
+
+# ---------------------------------------------------------------------------
+# PATHS
+# ---------------------------------------------------------------------------
+paths:
+
+  # -------------------------------------------------------------------------
+  # Authentication
+  # -------------------------------------------------------------------------
+  /v1/auth/login:
+    post:
+      summary: Authenticate user with email and password
+      description: |
+        Validates the provided email and password against the `users` table using
+        bcrypt comparison (minimum cost factor 12). On success, issues a signed RS256
+        JWT access token (15-minute TTL) and a 256-bit URL-safe refresh token
+        (7-day TTL). The plaintext refresh token is returned once; only its SHA-256
+        hash is stored in the database.
+
+        An `audit_log` entry is written for both successful and failed attempts.
+        The endpoint is rate-limited to **100 requests per minute per source IP**.
+      operationId: loginUser
+      tags:
+        - Authentication
+      x-rate-limit:
+        requests: 100
+        window: 60
+        per: ip
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: alice@example.com
+              password: "S3cur3P@ssw0rd!"
+      responses:
+        '200':
+          description: Authentication successful. Returns JWT access token and refresh token.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-Request-Id'
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/X-RateLimit-Reset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+              example:
+                access_token: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImtleS0yMDI2MDEifQ.eyJzdWIiOiI1NTBlODQwMC1lMjliLTQxZDQtYTcxNi00NDY2NTU0NDAwMDAiLCJlbWFpbCI6ImFsaWNlQGV4YW1wbGUuY29tIiwicm9sZXMiOlsidmlld2VyIl0sImF1dGhfbWV0aG9kIjoicGFzc3dvcmQiLCJ0ZW5hbnRfaWQiOm51bGwsInNjb3BlIjoib3BlbmlkIHByb2ZpbGUgZW1haWwgYXBpOnJlYWQiLCJpYXQiOjE3NTM2NTEwMDAsImV4cCI6MTc1MzY1MTkwMCwibmJmIjoxNzUzNjUxMDAwLCJpc3MiOiJodHRwczovL2dhdGV3YXkuZXhhbXBsZS5jb20iLCJhdWQiOiJwbGF0Zm9ybSIsImp0aSI6ImI0N2FjMTBiLTU4Y2MtNGM5Mi04MDA5LWRhZjU0Y2E0NzM3NCJ9.signature"
+                refresh_token: "dGhpcyBpcyBhIDI1Ni1iaXQgdXJsLXNhZmUgcmFuZG9tIHN0cmluZw"
+                token_type: Bearer
+                expires_in: 900
+                scope: "openid profile email api:read"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Invalid email or password.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: invalid_credentials
+                error_description: Email or password is incorrect.
+                request_id: "b47ac10b-58cc-4c92-8009-daf54ca47374"
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/auth/refresh:
+    post:
+      summary: Rotate refresh token and issue new token pair
+      description: |
+        Accepts a valid plaintext refresh token, locates the matching record by
+        SHA-256 hash, verifies it is not expired or revoked, and issues a new
+        access token + refresh token pair. The consumed refresh token is marked
+        revoked in the database atomically.
+
+        **Replay Attack Detection:** If the presented refresh token has already
+        been used (record is already revoked), the gateway immediately revokes
+        **all** refresh tokens in the same `session_family`, forcing full
+        re-authentication for all sessions associated with that token lineage.
+
+        Rate-limited to **100 requests per minute per source IP**.
+      operationId: refreshToken
+      tags:
+        - Authentication
+      x-rate-limit:
+        requests: 100
+        window: 60
+        per: ip
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+            example:
+              refresh_token: "dGhpcyBpcyBhIDI1Ni1iaXQgdXJsLXNhZmUgcmFuZG9tIHN0cmluZw"
+      responses:
+        '200':
+          description: Token rotation successful. Returns new access token and refresh token.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-Request-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Refresh token is invalid, expired, or has already been used.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                expired:
+                  summary: Expired refresh token
+                  value:
+                    error: token_expired
+                    error_description: The refresh token has expired. Please log in again.
+                    request_id: "b47ac10b-58cc-4c92-8009-daf54ca47374"
+                reuse:
+                  summary: Replay / reuse detected
+                  value:
+                    error: token_reuse_detected
+                    error_description: Refresh token reuse detected. All sessions have been revoked.
+                    request_id: "c58bd21c-69dd-5da3-9110-ebg65db58485"
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/auth/logout:
+    post:
+      summary: Revoke access token and refresh token (logout)
+      description: |
+        Revokes the authenticated session. The access token's `jti` is added to
+        the Redis revocation set with a TTL equal to the token's remaining lifetime.
+        The associated refresh token is marked revoked in PostgreSQL.
+
+        An optional `refresh_token` body parameter may be provided to target a
+        specific refresh token; if omitted, the most-recently-issued refresh token
+        for the session is revoked.
+
+        Returns `204 No Content` on success. Subsequent use of the revoked access
+        token returns `401 Unauthorized`.
+      operationId: logoutUser
+      tags:
+        - Authentication
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogoutRequest'
+      responses:
+        '204':
+          description: Logout successful. Tokens are revoked.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-Request-Id'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/auth/me:
+    get:
+      summary: Get authenticated user profile
+      description: |
+        Returns the authenticated user's profile, derived from the validated JWT
+        access token claims. No additional database query is performed; all fields
+        are sourced from the token payload. This endpoint is useful for clients
+        to hydrate their UI immediately after login without a separate profile API call.
+      operationId: getMe
+      tags:
+        - Authentication
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Returns the authenticated user's profile.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-Request-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+              example:
+                id: "550e8400-e29b-41d4-a716-446655440000"
+                email: alice@example.com
+                first_name: Alice
+                last_name: Smith
+                roles:
+                  - viewer
+                  - api_user
+                auth_method: password
+                tenant_id: null
+                email_verified: true
+                created_at: "2026-01-15T09:00:00.000Z"
+                last_login_at: "2026-07-27T14:30:00.000Z"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/auth/.well-known/jwks.json:
+    get:
+      summary: Retrieve JSON Web Key Set (JWKS)
+      description: |
+        Returns the gateway's active RSA public keys in JWK format (RFC 7517).
+        Upstream services and OAuth clients use this endpoint to verify JWT
+        signatures without contacting the gateway for every request.
+
+        The response includes all currently active and recently-rotated key IDs
+        to support zero-downtime key rotation. New tokens are signed with the
+        most-recently-activated key; old keys remain in the set until all tokens
+        signed with them have naturally expired (max 15 minutes for access tokens).
+
+        **Caching:** Responses are cached with `Cache-Control: public, max-age=3600`.
+        The endpoint is served from in-process memory and responds in < 50 ms.
+        No authentication is required.
+      operationId: getJwks
+      tags:
+        - Authentication
+      security: []
+      responses:
+        '200':
+          description: JSON Web Key Set containing active public keys.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: public, max-age=3600
+            X-Request-Id:
+              $ref: '#/components/headers/X-Request-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JwksResponse'
+              example:
+                keys:
+                  - kty: RSA
+                    use: sig
+                    kid: "key-20260101"
+                    alg: RS256
+                    "n": "sn38TJguMmTaTBm3_B4VdnXbP..."
+                    "e": AQAB
+                  - kty: RSA
+                    use: sig
+                    kid: "key-20260701"
+                    alg: RS256
+                    "n": "yq49UKhlNnTbCm4_C5WeoBz..."
+                    "e": AQAB
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # -------------------------------------------------------------------------
+  # SSO — SAML 2.0
+  # -------------------------------------------------------------------------
+  /v1/auth/saml/{tenant}/initiate:
+    get:
+      summary: Initiate SP-initiated SAML SSO for a tenant
+      description: |
+        Constructs a signed SAML `AuthnRequest`, encodes it as a URL-encoded
+        base64-DEFLATE string (HTTP-Redirect binding), and returns a `302 Found`
+        redirect to the tenant's configured IdP SSO URL.
+
+        The `RelayState` parameter carries an HMAC-SHA256-signed, 5-minute-TTL
+        opaque state token that encodes the original `redirect_to` URL so users
+        can be returned to their intended destination after authentication.
+
+        The tenant must have an active record in `saml_configurations`. Unknown
+        or inactive tenants return `404 Not Found`.
+      operationId: initiateSamlSso
+      tags:
+        - SSO
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/TenantSlug'
+        - name: redirect_to
+          in: query
+          required: false
+          description: |
+            URL to redirect the user to after successful authentication. Must be
+            a relative path or an absolute URL within the platform domain. External
+            URLs are rejected with `400 Bad Request`.
+          schema:
+            type: string
+            example: /dashboard
+      responses:
+        '302':
+          description: |
+            Redirects the browser to the IdP's SSO URL with a `SAMLRequest`
+            and `RelayState` query parameter.
+          headers:
+            Location:
+              schema:
+                type: string
+                example: "https://login.okta.com/app/saml/sso?SAMLRequest=...&RelayState=..."
+        '400':
+          description: Invalid `redirect_to` URL (external domain not allowed).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Tenant slug not found or SAML not configured for this tenant.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: tenant_not_found
+                error_description: No active SAML configuration found for tenant 'unknown-corp'.
+                request_id: "d59ce32d-70ee-6eb4-a221-fcg76ec59596"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/auth/saml/{tenant}/callback:
+    post:
+      summary: Consume SAML assertion from IdP (ACS endpoint)
+      description: |
+        The Assertion Consumer Service (ACS) endpoint. The IdP POSTs the SAML
+        Response here after the user authenticates. The gateway validates the
+        response using `passport-saml`:
+
+        1. XML signature verification against the IdP's X.509 certificate
+        2. `Conditions` element `NotBefore` / `NotOnOrAfter` time validation (±30 s tolerance)
+        3. `AudienceRestriction` check against the SP entity ID
+        4. `InResponseTo` correlation (SP-initiated flows only)
+
+        On success, extracts the `NameID` (email) and mapped attributes, looks up
+        or auto-provisions the user, issues a JWT access token + refresh token,
+        and redirects to the `RelayState` URL (SP-initiated) or the platform
+        default landing page (IdP-initiated).
+
+        **Note:** This endpoint accepts `application/x-www-form-urlencoded` as
+        required by the SAML HTTP-POST binding. The request body is processed
+        by `passport-saml` and is not directly represented in this schema.
+      operationId: samlCallback
+      tags:
+        - SSO
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/TenantSlug'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SamlCallbackRequest'
+      responses:
+        '302':
+          description: |
+            Successful assertion. Redirects to `RelayState` URL (SP-initiated)
+            or the platform default landing URL (IdP-initiated). Tokens may be
+            passed as secure HttpOnly cookies or as query parameters depending on
+            client type encoded in RelayState.
+          headers:
+            Location:
+              schema:
+                type: string
+                example: "https://app.example.com/dashboard?login=success"
+            Set-Cookie:
+              schema:
+                type: string
+                example: "access_token=eyJ...; HttpOnly; Secure; SameSite=Strict; Path=/"
+        '400':
+          description: Malformed SAML Response or missing required parameters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: |
+            SAML assertion validation failed (invalid signature, expired conditions,
+            wrong audience, or unrecognized InResponseTo).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: saml_validation_failed
+                error_description: SAML assertion signature is invalid.
+                request_id: "e60df43e-81ff-7fc5-b332-gdh87fd60607"
+        '404':
+          description: Tenant slug not found or SAML not configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/auth/saml/{tenant}/metadata:
+    get:
+      summary: Retrieve SAML Service Provider metadata XML
+      description: |
+        Returns the SAML 2.0 Service Provider (SP) metadata XML for the specified
+        tenant. IdP administrators use this document to configure their identity
+        provider's SAML integration with the gateway.
+
+        The metadata includes:
+        - SP Entity ID: `{gatewayBaseUrl}/saml/{tenant}`
+        - Assertion Consumer Service URL (POST binding)
+        - Single Logout Service URL (POST binding)
+        - SP X.509 certificate for assertion encryption and signature verification
+        - `NameIDFormat`: `urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress`
+
+        Metadata is generated on each request (not statically cached) to reflect
+        current certificate rotations. No authentication is required.
+      operationId: getSamlMetadata
+      tags:
+        - SSO
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/TenantSlug'
+      responses:
+        '200':
+          description: SAML SP metadata XML document.
+          headers:
+            Content-Type:
+              schema:
+                type: string
+                example: application/xml
+            X-Request-Id:
+              $ref: '#/components/headers/X-Request-Id'
+          content:
+            application/xml:
+              schema:
+                type: string
+                description: Valid SAML 2.0 SP metadata XML.
+                example: |
+                  <?xml version="1.0" encoding="UTF-8"?>
+                  <md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata"
+                    entityID="https://gateway.example.com/saml/acme-corp">
+                    <md:SPSSODescriptor AuthnRequestsSigned="true"
+                      WantAssertionsSigned="true"
+                      protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+                      <md:KeyDescriptor use="signing">
+                        <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+                          <ds:X509Data><ds:X509Certificate>MIID...</ds:X509Certificate></ds:X509Data>
+                        </ds:KeyInfo>
+                      </md:KeyDescriptor>
+                      <md:SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
+                        Location="https://gateway.example.com/v1/auth/saml/acme-corp/logout"/>
+                      <md:NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress</md:NameIDFormat>
+                      <md:AssertionConsumerService
+                        Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
+                        Location="https://gateway.example.com/v1/auth/saml/acme-corp/callback"
+                        index="1" isDefault="true"/>
+                    </md:SPSSODescriptor>
+                  </md:EntityDescriptor>
+        '404':
+          description: Tenant slug not found or SAML not configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/auth/saml/{tenant}/logout:
+    post:
+      summary: Process SAML Single Logout (SLO) request or response
+      description: |
+        Handles SAML Single Logout (SLO) messages exchanged via HTTP-POST binding.
+
+        **IdP-initiated SLO:** The IdP sends a `LogoutRequest` to this endpoint.
+        The gateway revokes all active refresh tokens for the resolved user, adds
+        all outstanding access token JTIs to the Redis revocation set, and returns
+        a valid SAML `LogoutResponse`.
+
+        **SP-initiated SLO:** When a user with an active SAML session calls
+        `POST /v1/auth/logout`, the gateway internally constructs and sends a
+        SAML `LogoutRequest` to the IdP's SLO URL. The IdP's `LogoutResponse`
+        is subsequently received at this endpoint.
+
+        Accepts `application/x-www-form-urlencoded` per SAML HTTP-POST binding.
+      operationId: samlLogout
+      tags:
+        - SSO
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/TenantSlug'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SamlLogoutRequest'
+      responses:
+        '200':
+          description: |
+            SLO processed successfully. Returns a SAML `LogoutResponse` XML
+            document to be forwarded to the IdP.
+          content:
+            application/xml:
+              schema:
+                type: string
+                description: SAML LogoutResponse XML.
+        '302':
+          description: |
+            For browser-based SLO flows, redirects with a SAML `LogoutResponse`
+            encoded in the query string (HTTP-Redirect binding).
+          headers:
+            Location:
+              schema:
+                type: string
+        '400':
+          description: Malformed SLO request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Tenant not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # -------------------------------------------------------------------------
+  # OAuth 2.0
+  # -------------------------------------------------------------------------
+  /v1/oauth/authorize:
+    get:
+      summary: OAuth 2.0 authorization endpoint (authorization_code flow)
+      description: |
+        The OAuth 2.0 authorization endpoint as defined in RFC 6749 §3.1, with
+        PKCE support per RFC 7636. Initiates the `authorization_code` grant flow.
+
+        **Validation steps performed:**
+        1. `client_id` must exist and be active in `oauth_clients`
+        2. `redirect_uri` must exactly match a registered URI for the client
+        3. `response_type` must be `"code"`
+        4. `scope` must be a subset of the client's `allowed_scopes`
+        5. `code_challenge_method` must be `"S256"` (plain is rejected)
+        6. `code_challenge` is **mandatory** for public clients
+
+        On success: issues an authorization code (10-minute TTL) and redirects to
+        `redirect_uri` with `code` and `state`. On error: redirects to `redirect_uri`
+        with `error` and `state` (unless `redirect_uri` is itself invalid, in which
+        case a direct `400` error response is returned).
+
+        **Note:** For v1, first-party clients (flagged in `oauth_clients`) are
+        auto-consented. A consent screen is out of scope.
+      operationId: oauthAuthorize
+      tags:
+        - OAuth
+      security: []
+      parameters:
+        - name: response_type
+          in: query
+          required: true
+          description: Must be `"code"` for the authorization code flow.
+          schema:
+            type: string
+            enum: [code]
+            example: code
+        - name: client_id
+          in: query
+          required: true
+          description: The registered OAuth client ID (UUID v4 string).
+          schema:
+            type: string
+            format: uuid
+            example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        - name: redirect_uri
+          in: query
+          required: true
+          description: |
+            Must exactly match one of the client's registered `redirect_uris`.
+            Must use HTTPS (except `localhost`).
+          schema:
+            type: string
+            format: uri
+            example: "https://app.example.com/oauth/callback"
+        - name: scope
+          in: query
+          required: true
+          description: |
+            Space-separated list of requested scopes. Must be a subset of the
+            client's `allowed_scopes`. Include `offline_access` to request a
+            refresh token.
+          schema:
+            type: string
+            example: "openid profile api:read offline_access"
+        - name: state
+          in: query
+          required: true
+          description: |
+            Opaque value the client uses to maintain state between the request
+            and callback. Used to prevent CSRF attacks. Returned unchanged in
+            the redirect.
+          schema:
+            type: string
+            example: "xyzABC123randomstate"
+        - name: code_challenge
+          in: query
+          required: true
+          description: |
+            PKCE code challenge. `BASE64URL(SHA256(code_verifier))`.
+            Mandatory for all public clients.
+          schema:
+            type: string
+            example: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        - name: code_challenge_method
+          in: query
+          required: true
+          description: Must be `"S256"`. The `plain` method is not supported.
+          schema:
+            type: string
+            enum: [S256]
+            example: S256
+      responses:
+        '302':
+          description: |
+            Authorization granted. Redirects to `redirect_uri` with `code`
+            and `state` query parameters.
+          headers:
+            Location:
+              schema:
+                type: string
+                example: "https://app.example.com/oauth/callback?code=abc123&state=xyzABC123randomstate"
+        '400':
+          description: |
+            Invalid request parameters (only returned directly if `redirect_uri`
+            itself is invalid). For other errors, the error is encoded in the
+            redirect to `redirect_uri`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+              example:
+                error: invalid_request
+                error_description: "redirect_uri does not match any registered URI for this client."
+                request_id: "f71eg54f-92gg-8gd6-c443-hei98ge71718"
+        '401':
+          description: User is not authenticated. Redirect to login.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/oauth/token:
+    post:
+      summary: Exchange authorization code or client credentials for access token
+      description: |
+        The OAuth 2.0 token endpoint as defined in RFC 6749 §3.2.
+        Supports the following `grant_type` values:
+
+        ### `authorization_code`
+        Exchanges an authorization code for an access token + optional refresh token.
+        - `code`: The authorization code received from `/v1/oauth/authorize`
+        - `redirect_uri`: Must match the URI used in the authorization request
+        - `client_id`: The client's ID
+        - `code_verifier`: PKCE verifier; `BASE64URL(SHA256(code_verifier))` must
+          match the stored `code_challenge`
+        - The code may only be used once. Replay returns `400 invalid_grant`.
+
+        ### `client_credentials`
+        Issues an access token for machine-to-machine API access.
+        - Client must authenticate via HTTP Basic Auth (`client_id:client_secret`)
+        - Client must have `client_credentials` in its registered `grant_types`
+        - No refresh token is issued for this grant type
+        - Access token TTL is 3,600 seconds (1 hour)
+
+        ### `refresh_token`
+        Rotates a refresh token and issues a new access token. See also
+        `POST /v1/auth/refresh` for the equivalent user-facing endpoint.
+
+        **Client Authentication:**
+        Confidential clients MUST authenticate via HTTP Basic Auth. Public clients
+        using `authorization_code` send `client_id` in the request body.
+      operationId: oauthToken
+      tags:
+        - OAuth
+      x-rate-limit:
+        requests: 100
+        window: 60
+        per: ip
+      security:
+        - BasicAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OAuthTokenRequest'
+            examples:
+              authorization_code:
+                summary: Exchange authorization code (public client with PKCE)
+                value:
+                  grant_type: authorization_code
+                  code: "SplxlOBeZQQYbYS6WxSbIA"
+                  redirect_uri: "https://app.example.com/oauth/callback"
+                  client_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                  code_verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+              client_credentials:
+                summary: Client credentials grant (confidential client via Basic Auth)
+                value:
+                  grant_type: client_credentials
+                  scope: "api:read api:write"
+      responses:
+        '200':
+          description: Token issued successfully.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+            Pragma:
+              schema:
+                type: string
+                example: no-cache
+            X-Request-Id:
+              $ref: '#/components/headers/X-Request-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+              example:
+                access_token: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImtleS0yMDI2MDEifQ..."
+                refresh_token: "dGhpcyBpcyBhIDI1Ni1iaXQgdXJsLXNhZmUgcmFuZG9tIHN0cmluZw"
+                token_type: Bearer
+                expires_in: 900
+                scope: "openid profile api:read offline_access"
+        '400':
+          description: Invalid grant, expired code, mismatched PKCE verifier, or unsupported grant type.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+              examples:
+                invalid_grant:
+                  value:
+                    error: invalid_grant
+                    error_description: "Authorization code is invalid, expired, or already used."
+                invalid_pkce:
+                  value:
+                    error: invalid_grant
+                    error_description: "PKCE code_verifier does not match the stored code_challenge."
+                unsupported_grant:
+                  value:
+                    error: unsupported_grant_type
+                    error_description: "The grant type 'implicit' is not supported."
+        '401':
+          description: Client authentication failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+              example:
+                error: invalid_client
+                error_description: "Client authentication failed."
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/oauth/introspect:
+    post:
+      summary: Introspect an OAuth access or refresh token (RFC 7662)
+      description: |
+        Token introspection endpoint per RFC 7662. Allows a resource server or
+        trusted client to determine the active state and metadata of a token.
+
+        **Authentication:** The requesting client must authenticate via HTTP Basic
+        Auth with a valid `client_id` and `client_secret`. Unauthenticated requests
+        are rejected.
+
+        **Active token:** Returns `{"active": true}` plus all token metadata.
+        **Inactive token** (expired, revoked, or unrecognized): Returns
+        `{"active": false}` — this is NOT an error response (per RFC 7662 §2.2).
+
+        Rate-limited independently from user-facing auth endpoints.
+      operationId: oauthIntrospect
+      tags:
+        - OAuth
+      security:
+        - BasicAuth: []
+      x-rate-limit:
+        requests: 200
+        window: 60
+        per: client
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/IntrospectionRequest'
+            example:
+              token: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+              token_type_hint: access_token
+      responses:
+        '200':
+          description: |
+            Introspection result. Note that inactive/invalid tokens also return
+            `200 OK` per RFC 7662 — the `active` field indicates validity.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+            X-Request-Id:
+              $ref: '#/components/headers/X-Request-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntrospectionResponse'
+              examples:
+                active_token:
+                  summary: Active access token
+                  value:
+                    active: true
+                    scope: "openid profile api:read"
+                    client_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                    username: alice@example.com
+                    token_type: Bearer
+                    exp: 1753651900
+                    iat: 1753651000
+                    nbf: 1753651000
+                    sub: "550e8400-e29b-41d4-a716-446655440000"
+                    aud: platform
+                    iss: "https://gateway.example.com"
+                    jti: "b47ac10b-58cc-4c92-8009-daf54ca47374"
+                inactive_token:
+                  summary: Inactive / expired / revoked token
+                  value:
+                    active: false
+        '401':
+          description: Client authentication failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/oauth/revoke:
+    post:
+      summary: Revoke an access or refresh token (RFC 7009)
+      description: |
+        Token revocation endpoint per RFC 7009. The client presents a token
+        to be revoked. The server immediately invalidates the token regardless
+        of its remaining lifetime.
+
+        - **Access tokens:** The `jti` is added to the Redis revocation set.
+        - **Refresh tokens:** The record in `refresh_tokens` is marked revoked.
+          If the refresh token belongs to a family, only the specific token is
+          revoked (not the entire family).
+
+        Per RFC 7009 §2.2, the server responds `200 OK` whether or not the token
+        was found (to prevent token enumeration). Client authentication is required.
+      operationId: oauthRevoke
+      tags:
+        - OAuth
+      security:
+        - BasicAuth: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RevocationRequest'
+            example:
+              token: "dGhpcyBpcyBhIDI1Ni1iaXQgdXJsLXNhZmUgcmFuZG9tIHN0cmluZw"
+              token_type_hint: refresh_token
+      responses:
+        '200':
+          description: |
+            Revocation acknowledged. Returns `200 OK` regardless of whether
+            the token existed (per RFC 7009).
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+        '401':
+          description: Client authentication failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OAuthErrorResponse'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/oauth/clients:
+    post:
+      summary: Register a new OAuth client (admin)
+      description: |
+        Admin-only endpoint to register a new OAuth 2.0 client application.
+        Requires the `X-Admin-Api-Key` header with a key that has the
+        `admin:oauth` scope.
+
+        **For confidential clients:** A `client_secret` is generated (256-bit
+        random), stored as a bcrypt hash, and returned **once only** in the
+        registration response. The plaintext secret is never stored and cannot
+        be retrieved again.
+
+        **Validation rules:**
+        - All `redirect_uris` must use HTTPS (exception: `localhost` and
+          `127.0.0.1` for development environments)
+        - `grant_types` must be a subset of: `authorization_code`,
+          `client_credentials`, `refresh_token`
+        - `allowed_scopes` must be a subset of the platform scope vocabulary
+        - `client_name` must be unique
+
+        **Public clients** (`client_type: "public"`) do not have a
+        `client_secret` and cannot use the `client_credentials` grant.
+      operationId: registerOauthClient
+      tags:
+        - OAuth
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClientRegistrationRequest'
+            example:
+              client_name: "My SPA Application"
+              client_type: public
+              redirect_uris:
+                - "https://app.example.com/oauth/callback"
+                - "https://app.example.com/oauth/silent-renew"
+              grant_types:
+                - authorization_code
+              allowed_scopes:
+                - openid
+                - profile
+                - email
+                - api:read
+                - offline_access
+              logo_uri: "https://app.example.com/logo.png"
+              contacts:
+                - "dev-team@example.com"
+      responses:
+        '201':
+          description: |
+            OAuth client registered successfully. The `client_secret` field is
+            included only for confidential clients and is shown exactly once.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-Request-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClientRegistrationResponse'
+              example:
+                client_id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                client_name: "My SPA Application"
+                client_type: public
+                client_secret: null
+                redirect_uris:
+                  - "https://app.example.com/oauth/callback"
+                grant_types:
+                  - authorization_code
+                allowed_scopes:
+                  - openid
+                  - profile
+                  - email
+                  - api:read
+                  - offline_access
+                created_at: "2026-07-27T15:00:00.000Z"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Missing or invalid admin API key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: A client with this `client_name` already exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: conflict
+                error_description: "A client named 'My SPA Application' is already registered."
+                request_id: "g82fh65g-03hh-9he7-d554-ijj09gf82829"
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # -------------------------------------------------------------------------
+  # Proxy
+  # -------------------------------------------------------------------------
+  /api/{service}/{path}:
+    parameters:
+      - name: service
+        in: path
+        required: true
+        description: |
+          Upstream service name as registered in the route configuration.
+          Examples: `users`, `orders`, `inventory`, `notifications`.
+        schema:
+          type: string
+          example: users
+      - name: path
+        in: path
+        required: true
+        description: |
+          Remaining path segments forwarded to the upstream service. The
+          gateway may optionally strip the `/api/{service}` prefix before
+          forwarding depending on `strip_prefix` in the route configuration.
+        schema:
+          type: string
+          example: "profile/settings"
+    get:
+      summary: Proxy GET request to upstream service
+      description: |
+        Proxies the incoming HTTP request to the upstream backend service
+        registered for the `{service}` path segment.
+
+        **Pre-proxy steps:**
+        1. Strip any client-supplied `X-User-*` identity headers (security)
+        2. If `auth_required = true`: validate Bearer token (401 if missing/invalid)
+        3. Enforce `allowed_roles` policy (403 if not satisfied)
+        4. Enforce `required_scope` policy (403 if not satisfied)
+        5. Check per-client or per-route rate limit (429 if exceeded)
+        6. Inject identity headers for authenticated requests
+        7. Forward request to upstream with configured timeout
+
+        **Injected headers (authenticated requests only):**
+        - `X-User-Id`: User UUID from JWT `sub` claim
+        - `X-User-Email`: Email from JWT `email` claim
+        - `X-User-Roles`: Comma-separated string of role names
+        - `X-Auth-Method`: One of `password`, `saml`, `oauth`
+        - `X-Tenant-Id`: Tenant UUID (omitted if null)
+        - `X-Request-Id`: UUID v4 generated per-request
+
+        All 2xx/3xx/4xx/5xx responses from the upstream are passed through
+        verbatim. A `502 Bad Gateway` is returned if the upstream is unreachable;
+        `504 Gateway Timeout` if the upstream exceeds `timeout_ms`.
+      operationId: proxyGet
+      tags:
+        - Proxy
+      security:
+        - BearerAuth: []
+        - {}
+      responses:
+        '200':
+          description: |
+            Upstream service responded successfully. Response body and headers
+            are passed through verbatim.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/X-Request-Id'
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Upstream service response (schema varies by service).
+                additionalProperties: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No route configuration found for the requested service/path.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: route_not_found
+                error_description: "No upstream route is configured for '/api/unknown/path'."
+                request_id: "h93gi76h-14ii-0if8-e665-jkk10hg93930"
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '502':
+          description: Upstream service is unreachable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: bad_gateway
+                error_description: "Upstream service 'users' is unreachable."
+                request_id: "i04hj87i-25jj-1jg9-f776-kll21ih04041"
+        '504':
+          description: Upstream service did not respond within the configured timeout.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      summary: Proxy POST request to upstream service
+      description: |
+        Proxies a POST request to the upstream backend service. See the GET
+        variant for full proxy behavior documentation. Request body is streamed
+        to the upstream verbatim. Content-Type is preserved.
+      operationId: proxyPost
+      tags:
+        - Proxy
+      security:
+        - BearerAuth: []
+        - {}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              additionalProperties: true
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: Upstream service responded successfully.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '201':
+          description: Resource created by upstream service.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '502':
+          description: Upstream service is unreachable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: Upstream service timed out.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      summary: Proxy PUT request to upstream service
+      operationId: proxyPut
+      tags:
+        - Proxy
+      security:
+        - BearerAuth: []
+        - {}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Upstream service responded successfully.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '502':
+          description: Upstream unreachable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: Upstream timed out.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    patch:
+      summary: Proxy PATCH request to upstream service
+      operationId: proxyPatch
+      tags:
+        - Proxy
+      security:
+        - BearerAuth: []
+        - {}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Upstream service responded successfully.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '502':
+          description: Upstream unreachable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: Upstream timed out.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Proxy DELETE request to upstream service
+      operationId: proxyDelete
+      tags:
+        - Proxy
+      security:
+        - BearerAuth: []
+        - {}
+      responses:
+        '200':
+          description: Upstream responded successfully.
+        '204':
+          description: Resource deleted by upstream service.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '502':
+          description: Upstream unreachable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: Upstream timed out.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # -------------------------------------------------------------------------
+  # System
+  # -------------------------------------------------------------------------
+  /health:
+    get:
+      summary: Liveness probe
+      description: |
+        Kubernetes liveness probe endpoint. Returns `200 OK` as long as the
+        Node.js process is running and the event loop is responsive. Does NOT
+        check external dependencies (PostgreSQL, Redis). Excluded from rate
+        limiting and audit logging. No authentication required.
+      operationId: healthCheck
+      tags:
+        - System
+      security: []
+      responses:
+        '200':
+          description: Service process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              example:
+                status: ok
+                uptime: 3600.42
+                timestamp: "2026-07-27T15:03:00.000Z"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /ready:
+    get:
+      summary: Readiness probe
+      description: |
+        Kubernetes readiness probe endpoint. Performs connectivity checks against
+        all required external dependencies:
+        - **PostgreSQL:** Executes `SELECT 1`
+        - **Redis:** Executes `PING`
+        - **Route config:** Verifies routes were loaded successfully at startup
+
+        Returns `200 OK` with per-check status when all dependencies are healthy.
+        Returns `503 Service Unavailable` with the failing dependency identified
+        when any check fails. Responds within 200 ms. No authentication required.
+        Excluded from rate limiting and audit logging.
+      operationId: readinessCheck
+      tags:
+        - System
+      security: []
+      responses:
+        '200':
+          description: All dependencies healthy. Service is ready to accept traffic.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+              example:
+                status: ready
+                checks:
+                  postgres: ok
+                  redis: ok
+                  routes: ok
+                timestamp: "2026-07-27T15:03:00.000Z"
+        '503':
+          description: One or more dependencies are unhealthy. Service is not ready.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+              example:
+                status: unavailable
+                checks:
+                  postgres: ok
+                  redis: "error: ECONNREFUSED"
+                  routes: ok
+                timestamp: "2026-07-27T15:03:00.000Z"
+
+# ---------------------------------------------------------------------------
+# COMPONENTS
+# ---------------------------------------------------------------------------
+components:
+
+  # -------------------------------------------------------------------------
+  # Security Schemes
+  # -------------------------------------------------------------------------
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT access token issued by the gateway's `/v1/auth/login`,
+        `/v1/auth/refresh`, or `/v1/oauth/token` endpoints. Tokens are
+        RS256-signed and expire after 15 minutes (900 seconds). Include in the
+        `Authorization` header as `Bearer <token>`.
+    BasicAuth:
+      type: http
+      scheme: basic
+      description: |
+        OAuth 2.0 client authentication. The username is `client_id` and the
+        password is `client_secret`. Used on the `/v1/oauth/token`,
+        `/v1/oauth/introspect`, and `/v1/oauth/revoke` endpoints.
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Admin-Api-Key
+      description: |
+        Admin API key with `admin:oauth` scope. Required for admin-only
+        operations such as OAuth client registration. Keys are managed
+        out-of-band by the platform operations team.
+
+  # -------------------------------------------------------------------------
+  # Parameters
+  # -------------------------------------------------------------------------
+  parameters:
+    TenantSlug:
+      name: tenant
+      in: path
+      required: true
+      description: |
+        URL-safe slug identifying the tenant's SAML configuration.
+        Corresponds to `saml_configurations.tenant_slug` in the database.
+        Must match the pattern `^[a-z0-9-]+$`.
+      schema:
+        type: string
+        pattern: '^[a-z0-9-]+$'
+        minLength: 2
+        maxLength: 63
+        example: acme-corp
+
+  # -------------------------------------------------------------------------
+  # Headers
+  # -------------------------------------------------------------------------
+  headers:
+    X-Request-Id:
+      description: UUID v4 request identifier for distributed tracing.
+      schema:
+        type: string
+        format: uuid
+        example: "b47ac10b-58cc-4c92-8009-daf54ca47374"
+    X-RateLimit-Limit:
+      description: The maximum number of requests allowed in the current window.
+      schema:
+        type: integer
+        example: 100
+    X-RateLimit-Remaining:
+      description: The number of requests remaining in the current window.
+      schema:
+        type: integer
+        example: 73
+    X-RateLimit-Reset:
+      description: Unix epoch timestamp (seconds) when the current rate limit window resets.
+      schema:
+        type: integer
+        example: 1753651060
+    Retry-After:
+      description: |
+        Number of seconds to wait before retrying (present on 429 responses only).
+      schema:
+        type: integer
+        example: 47
+
+  # -------------------------------------------------------------------------
+  # Schemas
+  # -------------------------------------------------------------------------
+  schemas:
+
+    # --- Auth Request Bodies ---
+
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+          description: The user's registered email address.
+          example: alice@example.com
+          maxLength: 254
+        password:
+          type: string
+          format: password
+          description: The user's password (plaintext; TLS required).
+          example: "S3cur3P@ssw0rd!"
+          minLength: 8
+          maxLength: 128
+      additionalProperties: false
+
+    RefreshTokenRequest:
+      type: object
+      required:
+        - refresh_token
+      properties:
+        refresh_token:
+          type: string
+          description: |
+            The plaintext refresh token received from a previous login or
+            token refresh response.
+          minLength: 32
+          maxLength: 512
+          example: "dGhpcyBpcyBhIDI1Ni1iaXQgdXJsLXNhZmUgcmFuZG9tIHN0cmluZw"
+      additionalProperties: false
+
+    LogoutRequest:
+      type: object
+      properties:
+        refresh_token:
+          type: string
+          description: |
+            Optional. If provided, this specific refresh token is revoked.
+            If omitted, the most-recently-issued refresh token for the
+            session is revoked.
+          example: "dGhpcyBpcyBhIDI1Ni1iaXQgdXJsLXNhZmUgcmFuZG9tIHN0cmluZw"
+      additionalProperties: false
+
+    # --- SAML Request Bodies ---
+
+    SamlCallbackRequest:
+      type: object
+      required:
+        - SAMLResponse
+      properties:
+        SAMLResponse:
+          type: string
+          description: |
+            Base64-encoded SAML Response XML, as provided by the IdP via
+            HTTP-POST binding.
+        RelayState:
+          type: string
+          description: |
+            Opaque state token generated during SP-initiated flow. Contains
+            the HMAC-signed original redirect URL. Absent for IdP-initiated flows.
+      additionalProperties: true
+
+    SamlLogoutRequest:
+      type: object
+      properties:
+        SAMLRequest:
+          type: string
+          description: Base64-encoded SAML LogoutRequest (IdP-initiated SLO).
+        SAMLResponse:
+          type: string
+          description: Base64-encoded SAML LogoutResponse (completing SP-initiated SLO).
+        RelayState:
+          type: string
+          description: Opaque relay state.
+        SigAlg:
+          type: string
+          description: Signature algorithm used (for HTTP-Redirect binding).
+        Signature:
+          type: string
+          description: Base64-encoded signature (for HTTP-Redirect binding).
+      additionalProperties: true
+
+    # --- OAuth Request Bodies ---
+
+    OAuthTokenRequest:
+      type: object
+      required:
+        - grant_type
+      properties:
+        grant_type:
+          type: string
+          enum:
+            - authorization_code
+            - client_credentials
+            - refresh_token
+          description: The OAuth 2.0 grant type being requested.
+        code:
+          type: string
+          description: |
+            Required for `authorization_code` grant. The authorization code
+            received from `/v1/oauth/authorize`.
+        redirect_uri:
+          type: string
+          format: uri
+          description: |
+            Required for `authorization_code` grant. Must match the URI used
+            in the authorization request exactly.
+        client_id:
+          type: string
+          description: |
+            Required for public clients using `authorization_code` grant (in
+            lieu of HTTP Basic Auth). Confidential clients use Basic Auth.
+        code_verifier:
+          type: string
+          description: |
+            Required for `authorization_code` grant when PKCE was used.
+            The original random string whose SHA-256 hash was sent as
+            `code_challenge`. Length: 43-128 characters.
+          minLength: 43
+          maxLength: 128
+        refresh_token:
+          type: string
+          description: |
+            Required for `refresh_token` grant. The plaintext refresh token
+            to be rotated.
+        scope:
+          type: string
+          description: |
+            Optional for `client_credentials` grant. Space-separated list of
+            requested scopes. Must be a subset of the client's `allowed_scopes`.
+      additionalProperties: false
+
+    IntrospectionRequest:
+      type: object
+      required:
+        - token
+      properties:
+        token:
+          type: string
+          description: The token to introspect (access token or refresh token).
+        token_type_hint:
+          type: string
+          enum:
+            - access_token
+            - refresh_token
+          description: |
+            Optional hint about the type of token being introspected. Helps
+            the server optimize lookup order but does not restrict the search.
+      additionalProperties: false
+
+    RevocationRequest:
+      type: object
+      required:
+        - token
+      properties:
+        token:
+          type: string
+          description: The token to revoke (access token or refresh token).
+        token_type_hint:
+          type: string
+          enum:
+            - access_token
+            - refresh_token
+          description: Optional hint about the type of token being revoked.
+      additionalProperties: false
+
+    ClientRegistrationRequest:
+      type: object
+      required:
+        - client_name
+        - client_type
+        - redirect_uris
+        - grant_types
+        - allowed_scopes
+      properties:
+        client_name:
+          type: string
+          description: Human-readable name for the OAuth client. Must be unique.
+          minLength: 1
+          maxLength: 255
+          example: "My SPA Application"
+        client_type:
+          type: string
+          enum:
+            - public
+            - confidential
+          description: |
+            `public`: No client secret; suitable for SPAs and mobile apps.
+            `confidential`: Has a client secret; suitable for server-side apps
+            and M2M integrations. Only confidential clients may use
+            `client_credentials` grant.
+          example: public
+        redirect_uris:
+          type: array
+          description: |
+            Registered redirect URIs. Must use HTTPS (localhost exempt for dev).
+            At least one URI is required. Maximum 10 URIs per client.
+          items:
+            type: string
+            format: uri
+          minItems: 1
+          maxItems: 10
+          example:
+            - "https://app.example.com/oauth/callback"
+        grant_types:
+          type: array
+          description: |
+            Allowed grant types. Valid values: `authorization_code`,
+            `client_credentials` (confidential only), `refresh_token`.
+          items:
+            type: string
+            enum:
+              - authorization_code
+              - client_credentials
+              - refresh_token
+          minItems: 1
+          example:
+            - authorization_code
+        allowed_scopes:
+          type: array
+          description: |
+            Scopes this client is permitted to request. Must be a subset of
+            the platform scope vocabulary: `openid`, `profile`, `email`,
+            `offline_access`, `api:read`, `api:write`, `admin:oauth`,
+            `admin:routes`.
+          items:
+            type: string
+          minItems: 1
+          example:
+            - openid
+            - profile
+            - email
+            - api:read
+            - offline_access
+        logo_uri:
+          type: string
+          format: uri
+          description: URL of the client application's logo image.
+          example: "https://app.example.com/logo.png"
+        contacts:
+          type: array
+          description: Email addresses of people responsible for this client.
+          items:
+            type: string
+            format: email
+          example:
+            - dev-team@example.com
+        rate_limit_rpm:
+          type: integer
+          description: |
+            Custom rate limit in requests per minute for this client.
+            Defaults to the platform default (100 rpm) if omitted.
+          minimum: 1
+          maximum: 10000
+          default: 100
+          example: 500
+      additionalProperties: false
+
+    # --- Response Bodies ---
+
+    TokenResponse:
+      type: object
+      required:
+        - access_token
+        - token_type
+        - expires_in
+        - scope
+      properties:
+        access_token:
+          type: string
+          description: |
+            Signed RS256 JWT access token. Expires in `expires_in` seconds.
+            Decode the payload to read `sub`, `email`, `roles`, `auth_method`,
+            `scope`, and other standard claims.
+          example: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImtleS0yMDI2MDEifQ..."
+        refresh_token:
+          type: string
+          nullable: true
+          description: |
+            Rotating refresh token (256-bit URL-safe random string). Present
+            for `authorization_code` and `password` grants when `offline_access`
+            scope is granted. Absent for `client_credentials` grant.
+            Expires in 7 days. Must be stored securely.
+          example: "dGhpcyBpcyBhIDI1Ni1iaXQgdXJsLXNhZmUgcmFuZG9tIHN0cmluZw"
+        token_type:
+          type: string
+          enum:
+            - Bearer
+          description: Always `"Bearer"`.
+          example: Bearer
+        expires_in:
+          type: integer
+          description: |
+            Lifetime of the access token in seconds from issuance.
+            `900` for user tokens (15 min); `3600` for client_credentials tokens.
+          example: 900
+        scope:
+          type: string
+          description: |
+            Space-separated list of scopes granted. May be a subset of the
+            requested scopes if the server downscoped the token.
+          example: "openid profile email api:read offline_access"
+      additionalProperties: false
+
+    UserProfile:
+      type: object
+      required:
+        - id
+        - email
+        - roles
+        - auth_method
+        - email_verified
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: User's unique identifier (UUID v4).
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        email:
+          type: string
+          format: email
+          description: User's email address.
+          example: alice@example.com
+        first_name:
+          type: string
+          nullable: true
+          description: User's first name, if available.
+          example: Alice
+        last_name:
+          type: string
+          nullable: true
+          description: User's last name, if available.
+          example: Smith
+        roles:
+          type: array
+          description: List of role names assigned to the user.
+          items:
+            type: string
+          example:
+            - viewer
+            - api_user
+        auth_method:
+          type: string
+          enum:
+            - password
+            - saml
+            - oauth
+          description: Authentication method used for the current session.
+          example: password
+        tenant_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Tenant UUID for SSO users. `null` for direct users.
+          example: null
+        email_verified:
+          type: boolean
+          description: Whether the user's email address has been verified.
+          example: true
+        created_at:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp of account creation.
+          example: "2026-01-15T09:00:00.000Z"
+        last_login_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: ISO 8601 timestamp of the user's most recent login.
+          example: "2026-07-27T14:30:00.000Z"
+
+    JwksResponse:
+      type: object
+      required:
+        - keys
+      properties:
+        keys:
+          type: array
+          description: Array of JSON Web Keys. May contain multiple keys for rotation support.
+          items:
+            $ref: '#/components/schemas/JwkKey'
+          minItems: 1
+
+    JwkKey:
+      type: object
+      required:
+        - kty
+        - use
+        - kid
+        - alg
+        - n
+        - e
+      properties:
+        kty:
+          type: string
+          enum:
+            - RSA
+          description: Key type. Always `"RSA"` for this gateway.
+          example: RSA
+        use:
+          type: string
+          enum:
+            - sig
+          description: Public key use. Always `"sig"` (signature verification).
+          example: sig
+        kid:
+          type: string
+          description: |
+            Key ID. Used in the JWT header to identify which key to use for
+            verification. Format: `key-YYYYMMDD`.
+          example: "key-20260101"
+        alg:
+          type: string
+          enum:
+            - RS256
+          description: Algorithm. Always `"RS256"`.
+          example: RS256
+        "n":
+          type: string
+          description: RSA modulus (Base64urlUInt-encoded).
+          example: "sn38TJguMmTaTBm3_B4VdnXbP..."
+        "e":
+          type: string
+          description: RSA public exponent (Base64urlUInt-encoded).
+          example: AQAB
+
+    SamlInitiateResponse:
+      type: object
+      description: |
+        Returned as JSON only in non-browser contexts where a redirect cannot
+        be followed. In standard browser flows the response is a `302` redirect.
+      required:
+        - redirect_url
+        - relay_state
+      properties:
+        redirect_url:
+          type: string
+          format: uri
+          description: The full IdP SSO URL with SAMLRequest and RelayState query parameters.
+          example: "https://login.okta.com/app/saml/sso?SAMLRequest=...&RelayState=..."
+        relay_state:
+          type: string
+          description: The HMAC-signed RelayState token.
+          example: "eyJhbGciOiJIUzI1NiJ9.eyJyZWRpcmVjdFRvIjoiL2Rhc2hib2FyZCIsImV4cCI6MTc1MzY1MTMwMH0.sig"
+
+    IntrospectionResponse:
+      type: object
+      required:
+        - active
+      properties:
+        active:
+          type: boolean
+          description: |
+            `true` if the token is valid, unexpired, and not revoked.
+            `false` for any invalid, expired, revoked, or unrecognized token.
+        scope:
+          type: string
+          description: Space-separated granted scopes (present if `active: true`).
+          example: "openid profile api:read"
+        client_id:
+          type: string
+          description: OAuth client ID that requested the token (present if `active: true`).
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        username:
+          type: string
+          description: Username (email) of the token subject (present if `active: true` and token has a user subject).
+          example: alice@example.com
+        token_type:
+          type: string
+          enum:
+            - Bearer
+          example: Bearer
+        exp:
+          type: integer
+          description: Unix epoch timestamp of token expiry.
+          example: 1753651900
+        iat:
+          type: integer
+          description: Unix epoch timestamp of token issuance.
+          example: 1753651000
+        nbf:
+          type: integer
+          description: Unix epoch timestamp before which the token is not valid.
+          example: 1753651000
+        sub:
+          type: string
+          description: Subject identifier (user UUID or client_id for client_credentials tokens).
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        aud:
+          type: string
+          description: Audience claim.
+          example: platform
+        iss:
+          type: string
+          description: Issuer claim.
+          example: "https://gateway.example.com"
+        jti:
+          type: string
+          description: JWT ID (unique identifier for the token).
+          example: "b47ac10b-58cc-4c92-8009-daf54ca47374"
+
+    ClientRegistrationResponse:
+      type: object
+      required:
+        - client_id
+        - client_name
+        - client_type
+        - redirect_uris
+        - grant_types
+        - allowed_scopes
+        - created_at
+      properties:
+        client_id:
+          type: string
+          format: uuid
+          description: Generated client identifier (UUID v4).
+          example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        client_name:
+          type: string
+          example: "My SPA Application"
+        client_type:
+          type: string
+          enum:
+            - public
+            - confidential
+          example: confidential
+        client_secret:
+          type: string
+          nullable: true
+          description: |
+            Plaintext client secret. **Present only once** in this registration
+            response and only for confidential clients. Store securely immediately.
+            `null` for public clients.
+          example: "A9f3Kp2mQvZ8rXnW4sYb6tUcEjDhNgLi1oP7qR0"
+        redirect_uris:
+          type: array
+          items:
+            type: string
+            format: uri
+          example:
+            - "https://app.example.com/oauth/callback"
+        grant_types:
+          type: array
+          items:
+            type: string
+          example:
+            - authorization_code
+            - refresh_token
+        allowed_scopes:
+          type: array
+          items:
+            type: string
+          example:
+            - openid
+            - profile
+            - email
+            - api:read
+            - offline_access
+        logo_uri:
+          type: string
+          format: uri
+          nullable: true
+          example: "https://app.example.com/logo.png"
+        contacts:
+          type: array
+          items:
+            type: string
+            format: email
+          example:
+            - dev-team@example.com
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-07-27T15:00:00.000Z"
+
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - uptime
+        - timestamp
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+          description: Always `"ok"` for a live process.
+          example: ok
+        uptime:
+          type: number
+          format: float
+          description: Process uptime in seconds.
+          example: 3600.42
+        timestamp:
+          type: string
+          format: date-time
+          description: Current server time in ISO 8601 format.
+          example: "2026-07-27T15:03:00.000Z"
+
+    ReadinessResponse:
+      type: object
+      required:
+        - status
+        - checks
+        - timestamp
+      properties:
+        status:
+          type: string
+          enum:
+            - ready
+            - unavailable
+          description: |
+            `"ready"` when all checks pass; `"unavailable"` when any check fails.
+          example: ready
+        checks:
+          type: object
+          required:
+            - postgres
+            - redis
+            - routes
+          properties:
+            postgres:
+              type: string
+              description: |
+                `"ok"` if PostgreSQL SELECT 1 succeeded; error message otherwise.
+              example: ok
+            redis:
+              type: string
+              description: |
+                `"ok"` if Redis PING succeeded; error message otherwise.
+              example: ok
+            routes:
+              type: string
+              description: |
+                `"ok"` if route configuration was loaded successfully at startup;
+                error message otherwise.
+              example: ok
+          additionalProperties: false
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-07-27T15:03:00.000Z"
+
+    # --- Error Response Schemas ---
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: |
+            Machine-readable error code. Common values:
+            - `invalid_credentials` — wrong email or password
+            - `token_expired` — JWT or refresh token past its expiry
+            - `token_revoked` — token has been explicitly revoked
+            - `token_reuse_detected` — refresh token replay attack detected
+            - `unauthorized` — missing or invalid Bearer token
+            - `forbidden` — authenticated but not authorized
+            - `insufficient_scope` — token lacks required OAuth scope
+            - `tenant_not_found` — SAML tenant slug not found
+            - `saml_validation_failed` — SAML assertion validation error
+            - `route_not_found` — no proxy route configured for the path
+            - `bad_gateway` — upstream service unreachable
+            - `rate_limit_exceeded` — too many requests
+            - `internal_server_error` — unexpected server-side error
+          example: unauthorized
+        error_description:
+          type: string
+          description: Human-readable explanation of the error. Not for programmatic use.
+          example: "The access token is missing or invalid."
+        error_uri:
+          type: string
+          format: uri
+          description: Optional URI to documentation about this error type.
+          example: "https://platform.example.com/docs/errors#unauthorized"
+        request_id:
+          type: string
+          format: uuid
+          description: |
+            The `X-Request-Id` for this request. Include in support tickets to
+            enable log correlation.
+          example: "b47ac10b-58cc-4c92-8009-daf54ca47374"
+      additionalProperties: false
+
+    OAuthErrorResponse:
+      type: object
+      description: |
+        OAuth 2.0 error response per RFC 6749 §5.2. Uses `error` codes defined
+        in the RFC and its extensions.
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: |
+            RFC 6749 error code. Common values:
+            - `invalid_request` — missing or malformed parameter
+            - `invalid_client` — client authentication failed
+            - `invalid_grant` — authorization code/token is invalid or expired
+            - `unauthorized_client` — client not permitted for this grant type
+            - `unsupported_grant_type` — grant type not supported
+            - `invalid_scope` — requested scope is invalid or exceeds allowed scopes
+            - `access_denied` — resource owner or authorization server denied the request
+          enum:
+            - invalid_request
+            - invalid_client
+            - invalid_grant
+            - unauthorized_client
+            - unsupported_grant_type
+            - invalid_scope
+            - access_denied
+          example: invalid_grant
+        error_description:
+          type: string
+          description: Human-readable description of the error.
+          example: "Authorization code is invalid, expired, or already used."
+        error_uri:
+          type: string
+          format: uri
+          description: URI to documentation about this error.
+        request_id:
+          type: string
+          format: uuid
+          example: "b47ac10b-58cc-4c92-8009-daf54ca47374"
+      additionalProperties: false
+
+  # -------------------------------------------------------------------------
+  # Responses (reusable)
+  # -------------------------------------------------------------------------
+  responses:
+    BadRequest:
+      description: |
+        The request was malformed or failed input validation. The `error_description`
+        field provides details on which parameter(s) were invalid.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: invalid_request
+            error_description: "Request body validation failed: 'email' must be a valid email address."
+            request_id: "b47ac10b-58cc-4c92-8009-daf54ca47374"
+
+    Unauthorized:
+      description: |
+        Authentication is required and has failed, or the provided credentials
+        are missing or invalid. Check the `error` field for the specific reason.
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+            example: 'Bearer realm="app-gateway", error="invalid_token"'
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: unauthorized
+            error_description: "A valid Bearer token is required."
+            request_id: "b47ac10b-58cc-4c92-8009-daf54ca47374"
+
+    Forbidden:
+      description: |
+        The authenticated user does not have permission to access this resource.
+        This may be due to insufficient roles or missing OAuth scopes.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            insufficient_role:
+              summary: Role not permitted
+              value:
+                error: forbidden
+                error_description: "Your role 'viewer' is not permitted to access this resource."
+                request_id: "b47ac10b-58cc-4c92-8009-daf54ca47374"
+            insufficient_scope:
+              summary: OAuth scope insufficient
+              value:
+                error: insufficient_scope
+                error_description: "Token does not include required scope 'api:write'."
+                request_id: "b47ac10b-58cc-4c92-8009-daf54ca47374"
+
+    TooManyRequests:
+      description: |
+        The rate limit for this client/IP has been exceeded. Wait until the
+        `X-RateLimit-Reset` timestamp or the `Retry-After` seconds have elapsed
+        before retrying.
+      headers:
+        X-RateLimit-Limit:
+          $ref: '#/components/headers/X-RateLimit-Limit'
+        X-RateLimit-Remaining:
+          $ref: '#/components/headers/X-RateLimit-Remaining'
+        X-RateLimit-Reset:
+          $ref: '#/components/headers/X-RateLimit-Reset'
+        Retry-After:
+          $ref: '#/components/headers/Retry-After'
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: rate_limit_exceeded
+            error_description: "Rate limit of 100 requests per minute exceeded. Retry after 47 seconds."
+            request_id: "b47ac10b-58cc-4c92-8009-daf54ca47374"
+
+    InternalServerError:
+      description: |
+        An unexpected error occurred on the server. The `request_id` can be
+        used to correlate this error with server-side logs.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/X-Request-Id'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: internal_server_error
+            error_description: "An unexpected error occurred. Please try again or contact support."
+            request_id: "b47ac10b-58cc-4c92-8009-daf54ca47374"
