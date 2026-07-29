@@ -35,6 +35,27 @@ describe('refreshSchema', () => {
     expect(refreshSchema.safeParse({ refresh_token: '' }).success).toBe(false);
     expect(refreshSchema.safeParse({}).success).toBe(false);
   });
+
+  it('accepts an omitted idempotency_key (optional, FR-4)', () => {
+    const result = refreshSchema.safeParse({ refresh_token: 'abc' });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a well-formed UUID idempotency_key (AC-10)', () => {
+    const result = refreshSchema.safeParse({
+      refresh_token: 'abc',
+      idempotency_key: '3fa85f64-5717-4562-b3fc-2c963f66afa6',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a malformed idempotency_key', () => {
+    const result = refreshSchema.safeParse({
+      refresh_token: 'abc',
+      idempotency_key: 'not-a-uuid',
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe('logoutSchema', () => {

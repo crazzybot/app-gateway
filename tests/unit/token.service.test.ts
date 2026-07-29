@@ -2,8 +2,13 @@ import { SignJWT, decodeJwt, decodeProtectedHeader } from 'jose';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   cacheRefreshTokenRevocation,
+  claimIdempotencyKey,
+  completeIdempotentRefresh,
+  getIdempotencyCacheEntry,
   getJwks,
   isTokenRevoked,
+  redis,
+  releaseIdempotencyKey,
   revokeToken,
   signAccessToken,
   verifyAccessToken,
@@ -166,5 +171,88 @@ describe('cacheRefreshTokenRevocation', () => {
     await expect(
       cacheRefreshTokenRevocation('some-hash', new Date(Date.now() + 604_800_000)),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('idempotent refresh cache (FR-4, AC-10)', () => {
+  it('returns null for a key that was never claimed', async () => {
+    const result = await getIdempotencyCacheEntry('never-claimed-key');
+    expect(result).toBeNull();
+  });
+
+  it('claims an unclaimed key and completes it with the real result', async () => {
+    const idempotencyKey = 'idem-key-1';
+    const result = {
+      userId: 'a1b2c3d4-e5f6-4789-9abc-def012345678',
+      accessToken: 'access-token-value',
+      refreshToken: 'refresh-token-value',
+      presentedTokenHash: 'a'.repeat(64),
+    };
+
+    expect(await claimIdempotencyKey(idempotencyKey)).toBe(true);
+    expect(await getIdempotencyCacheEntry(idempotencyKey)).toEqual({ status: 'pending' });
+
+    await completeIdempotentRefresh(idempotencyKey, result);
+    expect(await getIdempotencyCacheEntry(idempotencyKey)).toEqual({
+      status: 'done',
+      result,
+    });
+  });
+
+  it('fails a second claim for the same key while the first is still pending', async () => {
+    const idempotencyKey = 'idem-key-race';
+    expect(await claimIdempotencyKey(idempotencyKey)).toBe(true);
+    expect(await claimIdempotencyKey(idempotencyKey)).toBe(false); // already claimed
+  });
+
+  it('releases a claim so the key can be claimed again', async () => {
+    const idempotencyKey = 'idem-key-release';
+    expect(await claimIdempotencyKey(idempotencyKey)).toBe(true);
+
+    await releaseIdempotencyKey(idempotencyKey);
+
+    expect(await getIdempotencyCacheEntry(idempotencyKey)).toBeNull();
+    expect(await claimIdempotencyKey(idempotencyKey)).toBe(true); // claimable again
+  });
+
+  it('stores the completed result encrypted at rest, not as plaintext JSON', async () => {
+    const idempotencyKey = 'idem-key-encrypted';
+    await claimIdempotencyKey(idempotencyKey);
+    await completeIdempotentRefresh(idempotencyKey, {
+      userId: 'a1b2c3d4-e5f6-4789-9abc-def012345678',
+      accessToken: 'super-secret-access-token',
+      refreshToken: 'super-secret-refresh-token',
+      presentedTokenHash: 'a'.repeat(64),
+    });
+
+    const raw = await redis.get(`idempotency:refresh:${idempotencyKey}`);
+    expect(raw).not.toBeNull();
+    expect(raw).not.toContain('super-secret-access-token');
+    expect(raw).not.toContain('super-secret-refresh-token');
+    expect(() => {
+      JSON.parse(raw as string);
+    }).toThrow(); // not plaintext JSON
+  });
+
+  it('keeps distinct idempotency_key entries isolated from each other', async () => {
+    await claimIdempotencyKey('idem-key-a');
+    await completeIdempotentRefresh('idem-key-a', {
+      userId: 'user-a',
+      accessToken: 'access-a',
+      refreshToken: 'refresh-a',
+      presentedTokenHash: 'a'.repeat(64),
+    });
+    await claimIdempotencyKey('idem-key-b');
+    await completeIdempotentRefresh('idem-key-b', {
+      userId: 'user-b',
+      accessToken: 'access-b',
+      refreshToken: 'refresh-b',
+      presentedTokenHash: 'b'.repeat(64),
+    });
+
+    const entryA = await getIdempotencyCacheEntry('idem-key-a');
+    const entryB = await getIdempotencyCacheEntry('idem-key-b');
+    expect(entryA?.status === 'done' && entryA.result.userId).toBe('user-a');
+    expect(entryB?.status === 'done' && entryB.result.userId).toBe('user-b');
   });
 });

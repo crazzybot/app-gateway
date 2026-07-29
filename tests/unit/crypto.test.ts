@@ -1,34 +1,102 @@
-import { describe, expect, it } from 'vitest';
-import {
-  decryptEmail,
-  encryptEmail,
-  hashEmail,
-  loadSigningKeys,
-} from '@/utils/crypto.js';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { asMockedDb, createChainableResult } from './helpers/mockDb.js';
+
+vi.mock('@/db/client.js', () => ({
+  db: {
+    select: vi.fn(() => createChainableResult([])),
+    insert: vi.fn(() => createChainableResult([])),
+    update: vi.fn(() => createChainableResult([])),
+  },
+}));
+
+const db = asMockedDb((await import('@/db/client.js')).db);
+const { decryptEmail, encryptEmail, hashEmail, loadSigningKeys } = await import(
+  '@/utils/crypto.js'
+);
+const { wrapDek } = await import('@/utils/crypto.js');
+
+const TENANT_ID = '33333333-3333-4333-8333-000000000003';
+
+/**
+ * Points db.select at a single, pre-wrapped active DEK row for the given
+ * tenant key id so encryptEmail/decryptEmail exercise the "existing row"
+ * path consistently — avoids re-provisioning a fresh random DEK on every
+ * call, which would otherwise mask the DEK an earlier ciphertext in the
+ * same test was actually encrypted under.
+ */
+function stubActiveDek(tenantKeyId: string) {
+  const wrapped = wrapDek(randomBytes(32));
+  vi.mocked(db.select).mockReturnValue(
+    createChainableResult([
+      { tenantId: tenantKeyId, keyVersion: 1, wrappedDek: wrapped, status: 'active' },
+    ]),
+  );
+}
+
+beforeEach(() => {
+  vi.mocked(db.select).mockReset().mockReturnValue(createChainableResult([]));
+  vi.mocked(db.insert).mockReset().mockReturnValue(createChainableResult([]));
+  vi.mocked(db.update).mockReset().mockReturnValue(createChainableResult([]));
+});
 
 describe('encryptEmail / decryptEmail', () => {
-  it('round-trips plaintext', () => {
+  it('round-trips plaintext under the tenant default bucket (tenant_id null, AC-12)', async () => {
+    const { DEFAULT_TENANT_KEY_ID } = await import('@/services/tenantKey.service.js');
+    stubActiveDek(DEFAULT_TENANT_KEY_ID);
+
     const plaintext = 'user@example.com';
-    const ciphertext = encryptEmail(plaintext);
-    expect(decryptEmail(ciphertext)).toBe(plaintext);
+    const ciphertext = await encryptEmail(plaintext, null);
+    expect(await decryptEmail(ciphertext, null)).toBe(plaintext);
   });
 
-  it('produces different ciphertext for the same plaintext each time (random nonce)', () => {
+  it('round-trips plaintext under a specific tenant DEK (AC-11)', async () => {
+    stubActiveDek(TENANT_ID);
+
     const plaintext = 'user@example.com';
-    const first = encryptEmail(plaintext);
-    const second = encryptEmail(plaintext);
+    const ciphertext = await encryptEmail(plaintext, TENANT_ID);
+    expect(await decryptEmail(ciphertext, TENANT_ID)).toBe(plaintext);
+  });
+
+  it('produces different ciphertext for the same plaintext each time (random nonce)', async () => {
+    stubActiveDek(TENANT_ID);
+
+    const plaintext = 'user@example.com';
+    const first = await encryptEmail(plaintext, TENANT_ID);
+    const second = await encryptEmail(plaintext, TENANT_ID);
     expect(first).not.toBe(second);
-    expect(decryptEmail(first)).toBe(plaintext);
-    expect(decryptEmail(second)).toBe(plaintext);
+    expect(await decryptEmail(first, TENANT_ID)).toBe(plaintext);
+    expect(await decryptEmail(second, TENANT_ID)).toBe(plaintext);
   });
 
-  it('throws when the ciphertext has been tampered with', () => {
-    const ciphertext = encryptEmail('user@example.com');
+  it("cannot decrypt tenant A's ciphertext using tenant B's DEK (AC-11)", async () => {
+    const tenantA = randomUUID();
+    const tenantB = randomUUID();
+
+    vi.mocked(db.select).mockReturnValueOnce(createChainableResult([])); // tenant A: no active row
+    vi.mocked(db.insert).mockReturnValueOnce(
+      createChainableResult([{ tenantId: tenantA, keyVersion: 1 }]),
+    );
+    const ciphertext = await encryptEmail('user@example.com', tenantA);
+
+    vi.mocked(db.select).mockReturnValueOnce(createChainableResult([])); // tenant B: no active row
+    vi.mocked(db.insert).mockReturnValueOnce(
+      createChainableResult([{ tenantId: tenantB, keyVersion: 1 }]),
+    );
+    await encryptEmail('unused@example.com', tenantB); // provisions tenant B's own DEK
+
+    await expect(decryptEmail(ciphertext, tenantB)).rejects.toThrow();
+  });
+
+  it('throws when the ciphertext has been tampered with', async () => {
+    stubActiveDek(TENANT_ID);
+
+    const ciphertext = await encryptEmail('user@example.com', TENANT_ID);
     const raw = Buffer.from(ciphertext, 'base64');
     raw[raw.length - 1] = (raw[raw.length - 1]! ^ 0xff) & 0xff; // flip last byte
     const tampered = raw.toString('base64');
 
-    expect(() => decryptEmail(tampered)).toThrow();
+    await expect(decryptEmail(tampered, TENANT_ID)).rejects.toThrow();
   });
 });
 

@@ -14,6 +14,7 @@ export interface MockQueryBuilder {
   orderBy: Mock;
   set: Mock;
   values: Mock;
+  onConflictDoNothing: Mock;
   returning: Mock;
   then: (resolve: (value: unknown[]) => void) => void;
 }
@@ -26,6 +27,7 @@ export function createChainableResult(rows: unknown[] = []): MockQueryBuilder {
   builder.orderBy = vi.fn(() => builder);
   builder.set = vi.fn(() => builder);
   builder.values = vi.fn(() => builder);
+  builder.onConflictDoNothing = vi.fn(() => builder);
   builder.returning = vi.fn(() => Promise.resolve(rows));
   builder.then = (resolve) => {
     resolve(rows);

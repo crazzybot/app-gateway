@@ -184,6 +184,15 @@ paths:
         **all** refresh tokens in the same `session_family`, forcing full
         re-authentication for all sessions associated with that token lineage.
 
+        **Idempotent Retries:** An optional client-generated `idempotency_key`
+        (UUID) may be included. If a request presents an `idempotency_key`
+        matching one seen within the last 30 seconds for the same
+        `session_family`, the gateway returns the previously issued token pair
+        unchanged instead of re-running rotation or reuse-detection logic —
+        this lets a client safely retry after a lost response without
+        triggering replay-attack detection. Requests without a matching cached
+        `idempotency_key` follow normal rotation/reuse-detection behavior.
+
         Rate-limited to **100 requests per minute per source IP**.
       operationId: refreshToken
       tags:
@@ -1573,6 +1582,14 @@ components:
           minLength: 32
           maxLength: 512
           example: "dGhpcyBpcyBhIDI1Ni1iaXQgdXJsLXNhZmUgcmFuZG9tIHN0cmluZw"
+        idempotency_key:
+          type: string
+          format: uuid
+          description: |
+            Optional client-generated UUID. A retry presenting the same
+            idempotency_key within a 30-second window returns the original
+            token pair instead of re-running rotation/reuse-detection logic.
+          example: "3fa85f64-5717-4562-b3fc-2c963f66afa6"
       additionalProperties: false
 
     LogoutRequest:
@@ -2002,15 +2019,15 @@ components:
             `false` for any invalid, expired, revoked, or unrecognized token.
         scope:
           type: string
-          description: Space-separated granted scopes (present if `active: true`).
+          description: "Space-separated granted scopes (present if `active: true`)."
           example: "openid profile api:read"
         client_id:
           type: string
-          description: OAuth client ID that requested the token (present if `active: true`).
+          description: "OAuth client ID that requested the token (present if `active: true`)."
           example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
         username:
           type: string
-          description: Username (email) of the token subject (present if `active: true` and token has a user subject).
+          description: "Username (email) of the token subject (present if `active: true` and token has a user subject)."
           example: alice@example.com
         token_type:
           type: string

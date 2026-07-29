@@ -1,4 +1,6 @@
 {
+  "id": "6e46e581-383f-48f7-a5d3-0e8a44554d30",
+  "prevId": "51ee9fc1-bcfa-46ae-a69c-a075e99ef894",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -78,6 +80,7 @@
       },
       "indexes": {
         "audit_log_timestamp_idx": {
+          "name": "audit_log_timestamp_idx",
           "columns": [
             {
               "expression": "timestamp",
@@ -86,13 +89,13 @@
               "nulls": "last"
             }
           ],
-          "with": {},
-          "name": "audit_log_timestamp_idx",
           "isUnique": false,
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "audit_log_user_id_idx": {
+          "name": "audit_log_user_id_idx",
           "columns": [
             {
               "expression": "user_id",
@@ -107,13 +110,13 @@
               "nulls": "last"
             }
           ],
-          "with": {},
-          "name": "audit_log_user_id_idx",
           "isUnique": false,
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "audit_log_event_type_idx": {
+          "name": "audit_log_event_type_idx",
           "columns": [
             {
               "expression": "event_type",
@@ -128,33 +131,32 @@
               "nulls": "last"
             }
           ],
-          "with": {},
-          "name": "audit_log_event_type_idx",
           "isUnique": false,
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "audit_log_user_id_users_id_fk": {
           "name": "audit_log_user_id_users_id_fk",
           "tableFrom": "audit_log",
+          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "isRLSEnabled": false,
-      "checkConstraints": {}
+      "checkConstraints": {},
+      "isRLSEnabled": false
     },
     "public.auth_codes": {
       "name": "auth_codes",
@@ -222,22 +224,22 @@
         "auth_codes_user_id_users_id_fk": {
           "name": "auth_codes_user_id_users_id_fk",
           "tableFrom": "auth_codes",
+          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "isRLSEnabled": false,
-      "checkConstraints": {}
+      "checkConstraints": {},
+      "isRLSEnabled": false
     },
     "public.oauth_clients": {
       "name": "oauth_clients",
@@ -303,15 +305,15 @@
       "uniqueConstraints": {
         "oauth_clients_client_id_unique": {
           "name": "oauth_clients_client_id_unique",
+          "nullsNotDistinct": false,
           "columns": [
             "client_id"
-          ],
-          "nullsNotDistinct": false
+          ]
         }
       },
       "policies": {},
-      "isRLSEnabled": false,
-      "checkConstraints": {}
+      "checkConstraints": {},
+      "isRLSEnabled": false
     },
     "public.refresh_tokens": {
       "name": "refresh_tokens",
@@ -388,6 +390,7 @@
       },
       "indexes": {
         "refresh_tokens_user_id_idx": {
+          "name": "refresh_tokens_user_id_idx",
           "columns": [
             {
               "expression": "user_id",
@@ -396,13 +399,13 @@
               "nulls": "last"
             }
           ],
-          "with": {},
-          "name": "refresh_tokens_user_id_idx",
           "isUnique": false,
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "refresh_tokens_family_idx": {
+          "name": "refresh_tokens_family_idx",
           "columns": [
             {
               "expression": "session_family",
@@ -411,13 +414,13 @@
               "nulls": "last"
             }
           ],
-          "with": {},
-          "name": "refresh_tokens_family_idx",
           "isUnique": false,
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "refresh_tokens_expires_at_idx": {
+          "name": "refresh_tokens_expires_at_idx",
           "columns": [
             {
               "expression": "expires_at",
@@ -426,41 +429,117 @@
               "nulls": "last"
             }
           ],
-          "with": {},
-          "name": "refresh_tokens_expires_at_idx",
           "isUnique": false,
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {
         "refresh_tokens_user_id_users_id_fk": {
           "name": "refresh_tokens_user_id_users_id_fk",
           "tableFrom": "refresh_tokens",
+          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
         "refresh_tokens_token_hash_unique": {
           "name": "refresh_tokens_token_hash_unique",
+          "nullsNotDistinct": false,
           "columns": [
             "token_hash"
-          ],
-          "nullsNotDistinct": false
+          ]
         }
       },
       "policies": {},
-      "isRLSEnabled": false,
-      "checkConstraints": {}
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.tenant_encryption_keys": {
+      "name": "tenant_encryption_keys",
+      "schema": "",
+      "columns": {
+        "tenant_id": {
+          "name": "tenant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "key_version": {
+          "name": "key_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "wrapped_dek": {
+          "name": "wrapped_dek",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "retired_at": {
+          "name": "retired_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "tenant_encryption_keys_active_idx": {
+          "name": "tenant_encryption_keys_active_idx",
+          "columns": [
+            {
+              "expression": "tenant_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"tenant_encryption_keys\".\"status\" = 'active'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "tenant_encryption_keys_tenant_id_key_version_pk": {
+          "name": "tenant_encryption_keys_tenant_id_key_version_pk",
+          "columns": [
+            "tenant_id",
+            "key_version"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
     },
     "public.users": {
       "name": "users",
@@ -566,6 +645,7 @@
       },
       "indexes": {
         "users_email_hash_idx": {
+          "name": "users_email_hash_idx",
           "columns": [
             {
               "expression": "email_hash",
@@ -574,13 +654,13 @@
               "nulls": "last"
             }
           ],
-          "with": {},
-          "name": "users_email_hash_idx",
           "isUnique": false,
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         },
         "users_tenant_saml_idx": {
+          "name": "users_tenant_saml_idx",
           "columns": [
             {
               "expression": "tenant_id",
@@ -595,11 +675,10 @@
               "nulls": "last"
             }
           ],
-          "with": {},
-          "name": "users_tenant_saml_idx",
           "isUnique": false,
+          "concurrently": false,
           "method": "btree",
-          "concurrently": false
+          "with": {}
         }
       },
       "foreignKeys": {},
@@ -607,42 +686,40 @@
       "uniqueConstraints": {
         "users_email_unique": {
           "name": "users_email_unique",
+          "nullsNotDistinct": false,
           "columns": [
             "email"
-          ],
-          "nullsNotDistinct": false
+          ]
         },
         "users_email_hash_unique": {
           "name": "users_email_hash_unique",
+          "nullsNotDistinct": false,
           "columns": [
             "email_hash"
-          ],
-          "nullsNotDistinct": false
+          ]
         },
         "users_saml_name_id_unique": {
           "name": "users_saml_name_id_unique",
+          "nullsNotDistinct": false,
           "columns": [
             "saml_name_id"
-          ],
-          "nullsNotDistinct": false
+          ]
         }
       },
       "policies": {},
-      "isRLSEnabled": false,
-      "checkConstraints": {}
+      "checkConstraints": {},
+      "isRLSEnabled": false
     }
   },
   "enums": {},
   "schemas": {},
-  "_meta": {
-    "schemas": {},
-    "tables": {},
-    "columns": {}
-  },
-  "id": "51ee9fc1-bcfa-46ae-a69c-a075e99ef894",
-  "prevId": "00000000-0000-0000-0000-000000000000",
   "sequences": {},
+  "roles": {},
   "policies": {},
   "views": {},
-  "roles": {}
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
 }

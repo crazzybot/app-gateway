@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import request, { type Response } from 'supertest';
 import { afterAll, describe, expect, it } from 'vitest';
 import { app } from '@/index.js';
 import { db } from '@/db/client.js';
-import { refreshTokens } from '@/db/schema.js';
+import { refreshTokens, tenantEncryptionKeys } from '@/db/schema.js';
 import { hashRefreshToken } from '@/services/refreshToken.service.js';
+import { DEFAULT_TENANT_KEY_ID } from '@/services/tenantKey.service.js';
 import type { ErrorResponse, TokenResponse, UserProfile } from '@/types/index.js';
 import { closeConnections } from './helpers/closeConnections.js';
 
@@ -144,6 +145,197 @@ describe('POST /v1/auth/refresh (AC-7, AC-8)', () => {
       );
     expect(rotatedRow[0]?.revokedAt).not.toBeNull();
     expect(rotatedRow[0]?.revocationReason).toBe('reuse_detected');
+  });
+});
+
+describe('POST /v1/auth/refresh — idempotency_key (AC-10)', () => {
+  it('returns the identical token pair on a duplicate idempotency_key within the 30s window', async () => {
+    const email = uniqueEmail();
+    await seedUser({ email, password: 'p@ssword-idem-1' });
+    const login = body<TokenResponse>(
+      await request(app).post('/v1/auth/login').send({ email, password: 'p@ssword-idem-1' }),
+    );
+
+    const idempotencyKey = randomUUID();
+    const first = await request(app)
+      .post('/v1/auth/refresh')
+      .send({ refresh_token: login.refresh_token, idempotency_key: idempotencyKey });
+    expect(first.status).toBe(200);
+    const firstBody = body<TokenResponse>(first);
+
+    // Retry with the same (now-rotated-away) refresh_token and idempotency_key.
+    const retry = await request(app)
+      .post('/v1/auth/refresh')
+      .send({ refresh_token: login.refresh_token, idempotency_key: idempotencyKey });
+    expect(retry.status).toBe(200);
+    const retryBody = body<TokenResponse>(retry);
+
+    expect(retryBody.access_token).toBe(firstBody.access_token);
+    expect(retryBody.refresh_token).toBe(firstBody.refresh_token);
+
+    // No additional refresh_tokens row was inserted or revoked for the retry.
+    const rows = await db
+      .select()
+      .from(refreshTokens)
+      .where(eq(refreshTokens.tokenHash, hashRefreshToken(firstBody.refresh_token as string)));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.revokedAt).toBeNull();
+  });
+
+  it('does not revoke the session family when two truly concurrent requests share the same idempotency_key', async () => {
+    const email = uniqueEmail();
+    await seedUser({ email, password: 'p@ssword-idem-concurrent' });
+    const login = body<TokenResponse>(
+      await request(app)
+        .post('/v1/auth/login')
+        .send({ email, password: 'p@ssword-idem-concurrent' }),
+    );
+
+    const idempotencyKey = randomUUID();
+    // Fire both requests without awaiting between them — this is the race
+    // the Redis claim step (token.service.ts claimIdempotencyKey) exists to
+    // close: without it, both could miss the cache and both call
+    // rotateRefreshToken, tripping session-family-wide reuse detection.
+    const [first, second] = await Promise.all([
+      request(app)
+        .post('/v1/auth/refresh')
+        .send({ refresh_token: login.refresh_token, idempotency_key: idempotencyKey }),
+      request(app)
+        .post('/v1/auth/refresh')
+        .send({ refresh_token: login.refresh_token, idempotency_key: idempotencyKey }),
+    ]);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    const firstBody = body<TokenResponse>(first);
+    const secondBody = body<TokenResponse>(second);
+    expect(secondBody.access_token).toBe(firstBody.access_token);
+    expect(secondBody.refresh_token).toBe(firstBody.refresh_token);
+
+    // The session family must still be usable — a false-positive reuse
+    // detection would have revoked every token in it.
+    const familyRows = await db
+      .select()
+      .from(refreshTokens)
+      .where(eq(refreshTokens.tokenHash, hashRefreshToken(firstBody.refresh_token as string)));
+    expect(familyRows).toHaveLength(1);
+    expect(familyRows[0]?.revokedAt).toBeNull();
+    expect(familyRows[0]?.revocationReason).toBeNull();
+  });
+
+  it('does not return a cached pair when the presented refresh_token does not match the one that produced it', async () => {
+    const emailA = uniqueEmail();
+    const emailB = uniqueEmail();
+    await seedUser({ email: emailA, password: 'p@ssword-idem-mismatch-a' });
+    await seedUser({ email: emailB, password: 'p@ssword-idem-mismatch-b' });
+    const loginA = body<TokenResponse>(
+      await request(app)
+        .post('/v1/auth/login')
+        .send({ email: emailA, password: 'p@ssword-idem-mismatch-a' }),
+    );
+    const loginB = body<TokenResponse>(
+      await request(app)
+        .post('/v1/auth/login')
+        .send({ email: emailB, password: 'p@ssword-idem-mismatch-b' }),
+    );
+
+    const idempotencyKey = randomUUID();
+    const first = await request(app)
+      .post('/v1/auth/refresh')
+      .send({ refresh_token: loginA.refresh_token, idempotency_key: idempotencyKey });
+    expect(first.status).toBe(200);
+    const firstBody = body<TokenResponse>(first);
+
+    // Reuses the SAME idempotency_key but presents a different (still valid,
+    // unrelated) refresh_token — must be treated as a fresh rotation for
+    // user B, not a cache hit returning user A's pair.
+    const second = await request(app)
+      .post('/v1/auth/refresh')
+      .send({ refresh_token: loginB.refresh_token, idempotency_key: idempotencyKey });
+    expect(second.status).toBe(200);
+    const secondBody = body<TokenResponse>(second);
+
+    expect(secondBody.access_token).not.toBe(firstBody.access_token);
+    expect(secondBody.refresh_token).not.toBe(firstBody.refresh_token);
+  });
+
+  it(
+    'falls back to normal reuse detection once the idempotency cache window expires',
+    async () => {
+      const email = uniqueEmail();
+      await seedUser({ email, password: 'p@ssword-idem-2' });
+      const login = body<TokenResponse>(
+        await request(app).post('/v1/auth/login').send({ email, password: 'p@ssword-idem-2' }),
+      );
+
+      const idempotencyKey = randomUUID();
+      const first = await request(app)
+        .post('/v1/auth/refresh')
+        .send({ refresh_token: login.refresh_token, idempotency_key: idempotencyKey });
+      expect(first.status).toBe(200);
+
+      // Wait past the 30s idempotency cache TTL.
+      await new Promise((resolve) => setTimeout(resolve, 31_000));
+
+      // The same (now-rotated-away) refresh_token is presented again with a
+      // stale idempotency_key — the cache has expired, so this must fall
+      // back to normal reuse detection instead of returning the cached pair.
+      const afterExpiry = await request(app)
+        .post('/v1/auth/refresh')
+        .send({ refresh_token: login.refresh_token, idempotency_key: idempotencyKey });
+
+      expect(afterExpiry.status).toBe(401);
+      expect(body<ErrorResponse>(afterExpiry).error).toBe('token_reuse_detected');
+    },
+    40_000,
+  );
+});
+
+describe('Per-tenant email encryption (AC-11, AC-12)', () => {
+  it("encrypts two tenants' emails under distinct wrapped DEKs", async () => {
+    const tenantA = randomUUID();
+    const tenantB = randomUUID();
+    const emailA = uniqueEmail();
+    const emailB = uniqueEmail();
+
+    await seedUser({ email: emailA, password: 'p@ssword-tenant-a', tenantId: tenantA });
+    await seedUser({ email: emailB, password: 'p@ssword-tenant-b', tenantId: tenantB });
+
+    const keyRows = await db
+      .select()
+      .from(tenantEncryptionKeys)
+      .where(inArray(tenantEncryptionKeys.tenantId, [tenantA, tenantB]));
+
+    expect(keyRows).toHaveLength(2);
+    const wrappedDeks = new Set(keyRows.map((r) => r.wrappedDek));
+    expect(wrappedDeks.size).toBe(2); // distinct wrapped DEKs per tenant
+
+    // Each tenant's user still round-trips correctly under its own DEK.
+    const loginA = body<TokenResponse>(
+      await request(app)
+        .post('/v1/auth/login')
+        .send({ email: emailA, password: 'p@ssword-tenant-a' }),
+    );
+    const meA = await request(app)
+      .get('/v1/auth/me')
+      .set('Authorization', `Bearer ${loginA.access_token}`);
+    expect(body<UserProfile>(meA).email).toBe(emailA);
+  });
+
+  it('shares a single default DEK for tenant_id IS NULL users', async () => {
+    const email1 = uniqueEmail();
+    const email2 = uniqueEmail();
+    await seedUser({ email: email1, password: 'p@ssword-default-1', tenantId: null });
+    await seedUser({ email: email2, password: 'p@ssword-default-2', tenantId: null });
+
+    const keyRows = await db
+      .select()
+      .from(tenantEncryptionKeys)
+      .where(eq(tenantEncryptionKeys.tenantId, DEFAULT_TENANT_KEY_ID));
+
+    // Exactly one row for the default bucket, no matter how many
+    // tenant_id-IS-NULL users share it (AC-12).
+    expect(keyRows).toHaveLength(1);
   });
 });
 

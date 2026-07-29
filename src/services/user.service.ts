@@ -33,10 +33,10 @@ export interface AuthenticatedUser {
 
 type UserRow = typeof users.$inferSelect;
 
-function toAuthenticatedUser(row: UserRow): AuthenticatedUser {
+async function toAuthenticatedUser(row: UserRow): Promise<AuthenticatedUser> {
   return {
     id: row.id,
-    email: decryptEmail(row.email),
+    email: await decryptEmail(row.email, row.tenantId),
     firstName: row.firstName,
     lastName: row.lastName,
     roles: row.roles,
@@ -65,7 +65,7 @@ export async function findUserByEmail(
   const row = rows[0];
   if (!row) return null;
 
-  return { user: toAuthenticatedUser(row), passwordHash: row.passwordHash };
+  return { user: await toAuthenticatedUser(row), passwordHash: row.passwordHash };
 }
 
 export async function findUserById(id: string): Promise<AuthenticatedUser | null> {

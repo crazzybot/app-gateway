@@ -1,11 +1,11 @@
 # Feature: Core JWT Authentication
 
 **Ticket:** AGW-001-JWT (split from AGW-001)
-**Status:** `Approved`
+**Status:** `Implemented`
 **Author:** Platform Architecture Team
 **Reviewers:** Security Engineering, Backend Platform, QA Lead
 **Created:** 2026-07-01
-**Last Updated:** 2026-07-28
+**Last Updated:** 2026-07-29
 
 ---
 

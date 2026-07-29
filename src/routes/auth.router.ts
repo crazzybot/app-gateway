@@ -29,7 +29,16 @@ import {
   rotateRefreshToken,
   type RefreshTokenMetadata,
 } from '../services/refreshToken.service.js';
-import { getJwks, revokeToken, signAccessToken } from '../services/token.service.js';
+import {
+  claimIdempotencyKey,
+  completeIdempotentRefresh,
+  getIdempotencyCacheEntry,
+  getJwks,
+  releaseIdempotencyKey,
+  revokeToken,
+  signAccessToken,
+  type CachedRefreshResult,
+} from '../services/token.service.js';
 import {
   findUserById,
   findUserByEmail,
@@ -41,6 +50,41 @@ import { InvalidCredentialsError, UnauthorizedError } from '../types/errors.js';
 import type { AuditLogEntry, TokenResponse } from '../types/index.js';
 
 export const authRouter = Router();
+
+// Bounded wait for a concurrent request that already claimed the same
+// idempotency_key to finish (see token.service.ts's claim/complete/release
+// trio). 5 * 50ms = 250ms comfortably covers a normal rotation (~10ms
+// locally); a request that gives up waiting falls through to its own
+// rotation attempt rather than blocking indefinitely.
+const IDEMPOTENCY_CLAIM_WAIT_ATTEMPTS = 5;
+const IDEMPOTENCY_CLAIM_WAIT_MS = 50;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Waits for the request that currently holds an idempotency_key claim to
+ * complete it. Returns the matching cached result if it resolves in time
+ * and belongs to this same refresh_token; otherwise null, signaling the
+ * caller to fall through to a normal rotation attempt.
+ */
+async function waitForIdempotentResult(
+  idempotencyKey: string,
+  presentedTokenHash: string,
+): Promise<CachedRefreshResult | null> {
+  for (let attempt = 0; attempt < IDEMPOTENCY_CLAIM_WAIT_ATTEMPTS; attempt += 1) {
+    const entry = await getIdempotencyCacheEntry(idempotencyKey);
+    if (entry?.status === 'done') {
+      return entry.result.presentedTokenHash === presentedTokenHash ? entry.result : null;
+    }
+    if (entry === null) {
+      return null; // claim was released (the other request's rotation failed) or expired
+    }
+    await delay(IDEMPOTENCY_CLAIM_WAIT_MS);
+  }
+  return null; // still pending after the wait budget — fall through to normal rotation
+}
 
 function requestMeta(req: Request): RefreshTokenMetadata {
   const userAgent = req.headers['user-agent'];
@@ -130,11 +174,45 @@ authRouter.post('/login', validate(loginSchema), async (req, res, next) => {
 // ---------------------------------------------------------------------------
 
 authRouter.post('/refresh', validate(refreshSchema), async (req, res, next) => {
-  const { refresh_token: refreshToken } = req.body as { refresh_token: string };
+  const { refresh_token: refreshToken, idempotency_key: idempotencyKey } =
+    req.body as { refresh_token: string; idempotency_key?: string };
   const meta = requestMeta(req);
+  const scope = env.DEFAULT_USER_SCOPE;
+  const presentedTokenHash = hashRefreshToken(refreshToken);
+
+  // Claim the idempotency_key slot before touching rotation at all — closes
+  // the race where two near-simultaneous requests for the same key both
+  // miss the cache and both call rotateRefreshToken, tripping false-positive
+  // reuse detection on the second one (see token.service.ts).
+  let ownsIdempotencyClaim = false;
+  if (idempotencyKey) {
+    ownsIdempotencyClaim = await claimIdempotencyKey(idempotencyKey);
+    if (!ownsIdempotencyClaim) {
+      const waited = await waitForIdempotentResult(idempotencyKey, presentedTokenHash);
+      if (waited) {
+        const body: TokenResponse = {
+          access_token: waited.accessToken,
+          refresh_token: waited.refreshToken,
+          token_type: 'Bearer',
+          expires_in: env.ACCESS_TOKEN_TTL_SECONDS,
+          scope,
+        };
+        res.status(200).json(body);
+        return;
+      }
+      // Either the claim holder's result was for a different refresh_token,
+      // or it never resolved within the wait budget — fall through to a
+      // normal rotation attempt without owning the claim ourselves.
+    }
+  }
 
   const rotation = await rotateRefreshToken(refreshToken, meta);
   if (!rotation.ok) {
+    if (idempotencyKey && ownsIdempotencyClaim) {
+      // Release rather than leave a stuck "pending" claim for the rest of
+      // the TTL — this request never produced a result to complete it with.
+      await releaseIdempotencyKey(idempotencyKey);
+    }
     // Reuse detection already audits itself inside the service (it needs to
     // fire regardless of caller); only log the generic failure case here.
     if (rotation.error.code !== 'token_reuse_detected') {
@@ -155,7 +233,6 @@ authRouter.post('/refresh', validate(refreshSchema), async (req, res, next) => {
     return;
   }
 
-  const scope = env.DEFAULT_USER_SCOPE;
   const signed = await signAccessToken({
     sub: user.id,
     email: user.email,
@@ -171,6 +248,15 @@ authRouter.post('/refresh', validate(refreshSchema), async (req, res, next) => {
     resource: '/v1/auth/refresh',
     outcome: 'success',
   });
+
+  if (idempotencyKey && ownsIdempotencyClaim) {
+    await completeIdempotentRefresh(idempotencyKey, {
+      userId: user.id,
+      accessToken: signed.token,
+      refreshToken: rotation.value.issued.plaintext,
+      presentedTokenHash,
+    });
+  }
 
   const body: TokenResponse = {
     access_token: signed.token,

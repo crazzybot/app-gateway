@@ -31,7 +31,12 @@ import {
 } from 'jose';
 import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
-import { loadSigningKeys, type SigningKeys } from '../utils/crypto.js';
+import {
+  decryptIdempotencyCacheValue,
+  encryptIdempotencyCacheValue,
+  loadSigningKeys,
+  type SigningKeys,
+} from '../utils/crypto.js';
 import { ttlSecondsUntil } from '../utils/time.js';
 import {
   TokenExpiredError,
@@ -88,6 +93,100 @@ export async function cacheRefreshTokenRevocation(
   const ttlSeconds = ttlSecondsUntil(expiresAt);
   if (ttlSeconds <= 0) return;
   await redis.set(`${REVOKED_REFRESH_PREFIX}${tokenHash}`, '1', 'EX', ttlSeconds);
+}
+
+// ---------------------------------------------------------------------------
+// Refresh idempotency cache (FR-4, AC-10, Open Question 2)
+//
+// Caches the token pair issued for a client-supplied idempotency_key for 30s
+// so a lost response can be safely retried without re-entering rotation /
+// reuse-detection logic. Holds a live token pair in Redis for its short TTL
+// — flagged in the spec's Implementation Notes for explicit security review
+// (storage location, TTL tightness, at-rest encryption of the cached blob).
+//
+// Claim/complete/release (rather than a plain read-then-write cache) closes
+// a race found in review: two near-simultaneous requests for the same
+// idempotency_key could both miss the cache and both call
+// rotateRefreshToken — the second hitting the just-revoked row and tripping
+// session-family-wide reuse detection. claimIdempotencyKey uses Redis `SET
+// NX` so only one caller ever proceeds to rotation; a caller that loses the
+// claim waits briefly for the winner's result instead of racing it.
+// ---------------------------------------------------------------------------
+
+const IDEMPOTENCY_REFRESH_PREFIX = 'idempotency:refresh:';
+export const IDEMPOTENCY_REFRESH_TTL_SECONDS = 30;
+
+export interface CachedRefreshResult {
+  userId: string;
+  accessToken: string;
+  refreshToken: string;
+  /**
+   * SHA-256 hash of the refresh_token that produced this cached result.
+   * A retry must present that exact token to receive the cached pair —
+   * without this check, any request bearing a matching idempotency_key
+   * would get back someone else's token pair regardless of its own
+   * refresh_token, which is broader than FR-4's "for the same
+   * session_family" scoping.
+   */
+  presentedTokenHash: string;
+}
+
+export type IdempotencyCacheEntry =
+  | { status: 'pending' }
+  | { status: 'done'; result: CachedRefreshResult };
+
+function idempotencyRedisKey(idempotencyKey: string): string {
+  return `${IDEMPOTENCY_REFRESH_PREFIX}${idempotencyKey}`;
+}
+
+/**
+ * Atomically claims the idempotency_key slot before rotation begins.
+ * Returns true if this call claimed the slot (proceed with rotation) or
+ * false if another request already holds it (see {@link getIdempotencyCacheEntry}).
+ */
+export async function claimIdempotencyKey(idempotencyKey: string): Promise<boolean> {
+  const encrypted = encryptIdempotencyCacheValue(
+    JSON.stringify({ status: 'pending' } satisfies IdempotencyCacheEntry),
+  );
+  const result = await redis.set(
+    idempotencyRedisKey(idempotencyKey),
+    encrypted,
+    'EX',
+    IDEMPOTENCY_REFRESH_TTL_SECONDS,
+    'NX',
+  );
+  return result === 'OK';
+}
+
+/** Completes a slot claimed via {@link claimIdempotencyKey} with its real result. */
+export async function completeIdempotentRefresh(
+  idempotencyKey: string,
+  result: CachedRefreshResult,
+): Promise<void> {
+  // Encrypted at rest — this blob holds a live token pair, and a Redis
+  // snapshot can outlive the logical 30s TTL on disk (see security review).
+  const encrypted = encryptIdempotencyCacheValue(
+    JSON.stringify({ status: 'done', result } satisfies IdempotencyCacheEntry),
+  );
+  await redis.set(
+    idempotencyRedisKey(idempotencyKey),
+    encrypted,
+    'EX',
+    IDEMPOTENCY_REFRESH_TTL_SECONDS,
+  );
+}
+
+/** Releases a slot claimed via {@link claimIdempotencyKey} without completing it (rotation failed). */
+export async function releaseIdempotencyKey(idempotencyKey: string): Promise<void> {
+  await redis.del(idempotencyRedisKey(idempotencyKey));
+}
+
+export async function getIdempotencyCacheEntry(
+  idempotencyKey: string,
+): Promise<IdempotencyCacheEntry | null> {
+  const raw = await redis.get(idempotencyRedisKey(idempotencyKey));
+  if (!raw) return null;
+  return JSON.parse(decryptIdempotencyCacheValue(raw)) as IdempotencyCacheEntry;
 }
 
 // ---------------------------------------------------------------------------

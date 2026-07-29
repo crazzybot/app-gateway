@@ -10,10 +10,13 @@ import {
   boolean,
   index,
   inet,
+  integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
 
@@ -87,6 +90,38 @@ export const refreshTokens = pgTable(
     userIdIdx: index('refresh_tokens_user_id_idx').on(t.userId),
     sessionFamilyIdx: index('refresh_tokens_family_idx').on(t.sessionFamily),
     expiresAtIdx: index('refresh_tokens_expires_at_idx').on(t.expiresAt),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Tenant encryption keys (NFR-6) — one row per (tenant_id, key_version),
+// used to envelope-encrypt users.email. Rotation inserts a new 'active' row
+// and flips the previous row to 'retired' rather than overwriting it, so
+// rows encrypted under a retired key stay decryptable (see
+// TenantKeyService.rotateTenantKey). The NULL-tenant default bucket is
+// stored under a fixed sentinel UUID (see DEFAULT_TENANT_KEY_ID in
+// src/services/tenantKey.service.ts) since tenant_id is part of the primary
+// key and cannot itself be NULL.
+// ---------------------------------------------------------------------------
+
+export const tenantEncryptionKeys = pgTable(
+  'tenant_encryption_keys',
+  {
+    tenantId: uuid('tenant_id').notNull(),
+    keyVersion: integer('key_version').notNull().default(1),
+    wrappedDek: text('wrapped_dek').notNull(),
+    status: text('status').notNull().default('active'), // 'active' | 'retired'
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    retiredAt: timestamp('retired_at', { withTimezone: true }),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.tenantId, t.keyVersion] }),
+    // At most one 'active' row per tenant — enforces rotation correctness.
+    oneActivePerTenant: uniqueIndex('tenant_encryption_keys_active_idx')
+      .on(t.tenantId)
+      .where(sql`${t.status} = 'active'`),
   }),
 );
 

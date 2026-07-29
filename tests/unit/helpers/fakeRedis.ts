@@ -16,9 +16,20 @@ export class FakeRedis {
     return Promise.resolve(this.store.has(key) ? (this.store.get(key) as string) : null);
   }
 
-  set(key: string, value: string): Promise<'OK'> {
+  // Real ioredis accepts trailing option flags (e.g. 'EX', ttlSeconds, 'NX')
+  // as variadic args of mixed type — only NX is behaviorally relevant to any
+  // caller in this codebase, so that's the only flag this fake honors.
+  set(key: string, value: string, ...options: (string | number)[]): Promise<'OK' | null> {
+    const nx = options.some((opt) => typeof opt === 'string' && opt.toUpperCase() === 'NX');
+    if (nx && this.store.has(key)) {
+      return Promise.resolve(null);
+    }
     this.store.set(key, value);
     return Promise.resolve('OK');
+  }
+
+  del(key: string): Promise<number> {
+    return Promise.resolve(this.store.delete(key) ? 1 : 0);
   }
 
   incr(key: string): Promise<number> {

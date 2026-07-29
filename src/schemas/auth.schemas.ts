@@ -13,6 +13,7 @@ export type LoginBody = z.infer<typeof loginSchema>;
 
 export const refreshSchema = z.object({
   refresh_token: z.string().min(1, 'refresh_token is required'),
+  idempotency_key: z.string().uuid('idempotency_key must be a valid UUID').optional(),
 });
 export type RefreshBody = z.infer<typeof refreshSchema>;
 

@@ -18,21 +18,24 @@ export interface SeedUserInput {
   roles?: string[];
   firstName?: string;
   lastName?: string;
+  tenantId?: string | null;
 }
 
 export async function seedUser(input: SeedUserInput) {
   const passwordHash = await hashPassword(input.password);
+  const tenantId = input.tenantId ?? null;
 
   const [row] = await db
     .insert(users)
     .values({
-      email: encryptEmail(input.email),
+      email: await encryptEmail(input.email, tenantId),
       emailHash: hashEmail(input.email),
       passwordHash,
       firstName: input.firstName ?? null,
       lastName: input.lastName ?? null,
       roles: input.roles ?? ['viewer'],
       authSource: 'password',
+      tenantId,
       isActive: true,
       emailVerified: true,
     })

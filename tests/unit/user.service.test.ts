@@ -4,6 +4,9 @@ import { asMockedDb, createChainableResult } from './helpers/mockDb.js';
 vi.mock('@/db/client.js', () => ({
   db: {
     select: vi.fn(() => createChainableResult([])),
+    // Non-empty by default so the module-level tenant DEK provisioning
+    // below (via encryptEmail) succeeds before any test-specific mock is set.
+    insert: vi.fn(() => createChainableResult([{ tenantId: null, keyVersion: 1 }])),
     update: vi.fn(() => createChainableResult([])),
   },
 }));
@@ -20,7 +23,7 @@ const { encryptEmail, hashEmail } = await import('@/utils/crypto.js');
 
 const userRow = {
   id: 'a1b2c3d4-e5f6-4789-9abc-def012345678',
-  email: encryptEmail('user@example.com'),
+  email: await encryptEmail('user@example.com', null),
   emailHash: hashEmail('user@example.com'),
   passwordHash: '$2b$12$examplehash',
   firstName: 'Ada',
