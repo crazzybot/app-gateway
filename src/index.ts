@@ -141,8 +141,6 @@ async function shutdown(server: Server, signal: string): Promise<void> {
   try {
     const { db } = await import('./db/client.js');
     // Drizzle wraps pg.Pool — call end() on the underlying pool.
-    // @ts-expect-error — accessing internal pool for cleanup
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
     await db.$client?.end?.();
     logger.info('Database pool closed');
   } catch (err) {
