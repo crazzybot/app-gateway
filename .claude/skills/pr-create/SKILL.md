@@ -1,3 +1,8 @@
+---
+name: pr-create
+description: Generate a ready-to-paste PR description from the git diff, the feature spec, the CLAUDE.md Definition of Done, and any /review findings. Use once implementation is complete and reviewed, right before opening the PR.
+---
+
 # Skill: /pr-create — Pull Request Description Generator
 
 ## Usage

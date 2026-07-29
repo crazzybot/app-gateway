@@ -1,3 +1,8 @@
+---
+name: fix-issue
+description: Fetch a Jira or Linear issue by ID, classify the work type (bug/enhancement/task), and follow the matching fix protocol (bugs get a failing test first) with every change traced back to the issue ID. Use at the start of a ticket-driven bug-fix or task session.
+---
+
 # Skill: /fix-issue — Fetch and Implement a Jira or Linear Issue
 
 ## Usage

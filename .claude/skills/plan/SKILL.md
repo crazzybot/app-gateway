@@ -1,3 +1,8 @@
+---
+name: plan
+description: Generate a sequenced implementation plan (API contract → services/routes → tests) from an approved spec in specs/, saved to plans/[feature-name].plan.md. Use after a spec is approved and before /implement.
+---
+
 # Skill: /plan — Structured Implementation Plan from Spec
 
 ## Usage

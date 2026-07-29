@@ -1,3 +1,8 @@
+---
+name: spec-feature
+description: Run a structured requirements interview and produce an approved-quality feature spec at specs/[feature-name].spec.md. Use at the start of any non-trivial feature, before any planning or code is written.
+---
+
 # Skill: /spec-feature — Interview-First Feature Specification
 
 ## Usage

@@ -1,3 +1,8 @@
+---
+name: api-change
+description: Guided API-first workflow for adding or changing an endpoint — updates specs/openapi.yaml first, then the hand-written Zod schema in src/schemas/, then the route/service code, since this project has no codegen step. Use for any new or modified REST endpoint.
+---
+
 # Skill: /api-change — API-First Endpoint Workflow
 
 ## Usage

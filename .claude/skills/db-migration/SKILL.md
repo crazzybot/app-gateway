@@ -1,3 +1,8 @@
+---
+name: db-migration
+description: Guided Drizzle ORM schema-change workflow — edit src/db/schema.ts, generate the migration with drizzle-kit, review the generated SQL, and assess safety/rollback. Use for any table, column, or index change.
+---
+
 # Skill: /db-migration — Guided Drizzle Migration Workflow
 
 ## Usage

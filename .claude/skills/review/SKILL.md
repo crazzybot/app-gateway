@@ -1,3 +1,8 @@
+---
+name: review
+description: Adversarial spec-compliance review in a fresh reasoning context — verifies every acceptance criterion against code/tests, audits the CLAUDE.md Definition of Done, and dispatches the security/performance/api-contract subagents as needed. Use after implementation is complete, before /pr-create.
+---
+
 # Skill: /review — Adversarial Spec-Compliance Review
 
 ## Usage

@@ -1,3 +1,8 @@
+---
+name: implement
+description: Execute an approved implementation plan from plans/[feature-name].plan.md task-by-task, cross-referencing the originating spec for every decision. Use after a plan is approved, to write the actual code.
+---
+
 # Skill: /implement — Spec-Driven Plan Execution
 
 ## Usage
