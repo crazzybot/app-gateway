@@ -5,6 +5,10 @@ FROM node:20-alpine
 
 WORKDIR /app
 
+# Pick up Alpine's latest security patches at build time rather than relying
+# solely on the base image tag, which can lag between local rebuilds.
+RUN apk update && apk upgrade --no-cache
+
 COPY package.json package-lock.json* ./
 RUN npm install
 
