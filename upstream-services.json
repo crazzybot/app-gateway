@@ -1,0 +1,35 @@
+[
+  {
+    "path": "/api/users/*rest",
+    "upstream": "http://localhost:4001",
+    "auth_required": true,
+    "required_scope": null,
+    "allowed_roles": null,
+    "rate_limit_override": null,
+    "strip_prefix": false,
+    "timeout_ms": 30000,
+    "audit_allowed_requests": false
+  },
+  {
+    "path": "/api/public/*rest",
+    "upstream": "http://localhost:4002",
+    "auth_required": false,
+    "required_scope": null,
+    "allowed_roles": null,
+    "rate_limit_override": null,
+    "strip_prefix": false,
+    "timeout_ms": 30000,
+    "audit_allowed_requests": false
+  },
+  {
+    "path": "/api/admin/*rest",
+    "upstream": "http://localhost:4003",
+    "auth_required": true,
+    "required_scope": null,
+    "allowed_roles": ["admin"],
+    "rate_limit_override": 20,
+    "strip_prefix": true,
+    "timeout_ms": 10000,
+    "audit_allowed_requests": true
+  }
+]

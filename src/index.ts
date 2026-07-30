@@ -61,8 +61,14 @@ export function createApp(): express.Express {
   app.use(httpLogger);
 
   // ── Body parsers ──────────────────────────────────────────────────────────
-  app.use(express.json({ limit: '256kb' }));
-  app.use(express.urlencoded({ extended: true, limit: '256kb' }));
+  // Scoped to /v1/auth and /v1/oauth only — NOT global. A global body parser
+  // would consume the request stream before it reaches proxyRouter below,
+  // and http-proxy-middleware pipes the raw incoming stream to the upstream;
+  // an already-drained stream forwards no body at all. Per openapi.yaml, the
+  // proxy must stream POST/PUT/PATCH bodies to the upstream verbatim, so
+  // /api/** must never pass through a body parser.
+  app.use(['/v1/auth', '/v1/oauth'], express.json({ limit: '256kb' }));
+  app.use(['/v1/auth', '/v1/oauth'], express.urlencoded({ extended: true, limit: '256kb' }));
 
   // ── Cookie parser ─────────────────────────────────────────────────────────
   app.use(cookieParser());

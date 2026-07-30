@@ -40,7 +40,6 @@ export interface UserProfile {
   last_login_at: string | null;
 }
 
-// Declared for forward-compat with the proxy phase (FR-16) — unused in Phase 1.
 export interface RouteConfig {
   path: string;
   upstream: string;
@@ -50,6 +49,7 @@ export interface RouteConfig {
   rate_limit_override: number | null;
   strip_prefix: boolean;
   timeout_ms: number;
+  audit_allowed_requests: boolean;
 }
 
 export interface AuditLogEntry {

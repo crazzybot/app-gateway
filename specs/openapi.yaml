@@ -1222,6 +1222,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
     post:
       summary: Proxy POST request to upstream service
       description: |
@@ -1263,6 +1265,16 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No route configuration found for the requested service/path.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: route_not_found
+                error_description: "No upstream route is configured for '/api/unknown/path'."
+                request_id: "h93gi76h-14ii-0if8-e665-jkk10hg93930"
         '429':
           $ref: '#/components/responses/TooManyRequests'
         '502':
@@ -1277,6 +1289,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
     put:
       summary: Proxy PUT request to upstream service
       operationId: proxyPut
@@ -1299,6 +1313,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No route configuration found for the requested service/path.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '429':
           $ref: '#/components/responses/TooManyRequests'
         '502':
@@ -1313,6 +1333,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
     patch:
       summary: Proxy PATCH request to upstream service
       operationId: proxyPatch
@@ -1335,6 +1357,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No route configuration found for the requested service/path.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '429':
           $ref: '#/components/responses/TooManyRequests'
         '502':
@@ -1349,6 +1377,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
     delete:
       summary: Proxy DELETE request to upstream service
       operationId: proxyDelete
@@ -1366,6 +1396,12 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No route configuration found for the requested service/path.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '429':
           $ref: '#/components/responses/TooManyRequests'
         '502':
@@ -1380,6 +1416,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
 
   # -------------------------------------------------------------------------
   # System
@@ -2227,6 +2265,7 @@ components:
             - `saml_validation_failed` — SAML assertion validation error
             - `route_not_found` — no proxy route configured for the path
             - `bad_gateway` — upstream service unreachable
+            - `gateway_timeout` — upstream service did not respond within timeout_ms
             - `rate_limit_exceeded` — too many requests
             - `internal_server_error` — unexpected server-side error
           example: unauthorized

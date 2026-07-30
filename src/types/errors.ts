@@ -35,9 +35,16 @@ export class BadRequestError extends AppError {
 
 // ── 401 ──────────────────────────────────────────────────────────────────────
 
+/**
+ * Spec-exact lowercase code (AC-25, openapi.yaml ErrorResponse doc comment
+ * and the shared Unauthorized response's `unauthorized` example) — was
+ * `UNAUTHORIZED` before this reconciliation; no test asserted the old
+ * literal code string, so this is a safe rename, not a breaking change to
+ * any documented contract.
+ */
 export class UnauthorizedError extends AppError {
   constructor(message = 'Authentication required') {
-    super('UNAUTHORIZED', message, 401);
+    super('unauthorized', message, 401);
   }
 }
 
@@ -80,9 +87,14 @@ export class TokenReuseDetectedError extends AppError {
 
 // ── 403 ──────────────────────────────────────────────────────────────────────
 
+/**
+ * Spec-exact lowercase code (AC-32, openapi.yaml Forbidden `insufficient_role`
+ * example: `error: forbidden`) — not used by any route before this feature,
+ * so aligning it to the documented wire code is a safe rename.
+ */
 export class ForbiddenError extends AppError {
   constructor(message = 'You do not have permission to perform this action') {
-    super('FORBIDDEN', message, 403);
+    super('forbidden', message, 403);
   }
 }
 
@@ -105,6 +117,17 @@ export class NotFoundError extends AppError {
   }
 }
 
+/** No proxy route configured for the requested path (FR-16, openapi.yaml). */
+export class RouteNotFoundError extends AppError {
+  constructor(path: string) {
+    super(
+      'route_not_found',
+      `No upstream route is configured for '${path}'.`,
+      404,
+    );
+  }
+}
+
 // ── 409 ──────────────────────────────────────────────────────────────────────
 
 export class ConflictError extends AppError {
@@ -115,20 +138,43 @@ export class ConflictError extends AppError {
 
 // ── 429 ──────────────────────────────────────────────────────────────────────
 
+/**
+ * Spec-exact lowercase code (FR-19(d), openapi.yaml TooManyRequests
+ * response's `rate_limit_exceeded` example) — was `RATE_LIMITED` before
+ * this reconciliation; no test asserted the old literal code string.
+ */
 export class TooManyRequestsError extends AppError {
   constructor(message = 'Rate limit exceeded. Please slow down.') {
-    super('RATE_LIMITED', message, 429);
+    super('rate_limit_exceeded', message, 429);
   }
 }
 
 // ── 502 ──────────────────────────────────────────────────────────────────────
 
+/**
+ * Spec-exact lowercase code (openapi.yaml `/api/{service}/{path}` 502
+ * example: `bad_gateway`) — was `UPSTREAM_ERROR` before this reconciliation
+ * (R-1); no test asserted the old literal code string, so this is a safe
+ * rename, not a breaking change to any documented contract.
+ */
 export class UpstreamError extends AppError {
   constructor(service: string, cause?: string) {
     super(
-      'UPSTREAM_ERROR',
+      'bad_gateway',
       `Upstream service "${service}" returned an error${cause ? `: ${cause}` : '.'}`,
       502,
+    );
+  }
+}
+
+// ── 504 ──────────────────────────────────────────────────────────────────────
+
+export class GatewayTimeoutError extends AppError {
+  constructor(service: string) {
+    super(
+      'gateway_timeout',
+      `Upstream service "${service}" did not respond within the configured timeout.`,
+      504,
     );
   }
 }
