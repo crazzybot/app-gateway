@@ -42,11 +42,17 @@ export function errorHandler(
   }
 
   // Unexpected / programming errors — log with full stack.
+  // NOTE: winston's `errors({ stack: true })` format only unwraps an Error
+  // when it is the log's top-level message, not when nested in meta — an
+  // Error nested under `err` serializes to `{}` (no enumerable props).
   logger.error('Unhandled error', {
     requestId,
     path: req.path,
     method: req.method,
-    err,
+    err:
+      err instanceof Error
+        ? { name: err.name, message: err.message, stack: err.stack }
+        : err,
   });
 
   const body: ErrorResponse = {
